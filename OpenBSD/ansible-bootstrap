@@ -1,0 +1,401 @@
+#!/bin/sh
+#
+# OpenBSD Ansible bootstrap service
+#
+# Usage:
+#   ansible-bootstrap check
+#   ansible-bootstrap apply
+#
+# Run as root.
+#
+
+set -eu
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+export PATH
+
+USER_NAME=ansible
+USER_HOME=/home/ansible
+USER_SHELL=/bin/ksh
+
+CONFIG_DIR=/etc/ansible-bootstrap
+KEY_FILE=$CONFIG_DIR/controller.pub
+
+DOAS_CONF=/etc/doas.conf
+DOAS_RULE="permit nopass $USER_NAME as root"
+
+# Select a Python version supported by your ansible-core.
+# This initial version uses a fixed package and interpreter.
+PYTHON_PACKAGE='python%3.13'
+PYTHON_BIN=/usr/local/bin/python3.13
+
+log()
+{
+    echo "ansible-bootstrap: $*" >&2
+}
+
+die()
+{
+    log "ERROR: $*"
+    exit 1
+}
+
+require_root()
+{
+    [ "$(id -u)" -eq 0 ] ||
+        die "Must run as root"
+}
+
+# ---------------------------------------------------------
+# Public key
+# ---------------------------------------------------------
+
+check_key_source()
+{
+    [ -f "$KEY_FILE" ] || return 1
+    [ ! -L "$KEY_FILE" ] || return 1
+
+    # Exactly one public key is supported in v0.1.
+    [ "$(wc -l < "$KEY_FILE" | tr -d '[:space:]')" -eq 1 ] ||
+        return 1
+
+    /usr/bin/ssh-keygen -lf "$KEY_FILE" >/dev/null 2>&1 ||
+        return 1
+
+    # Require an Ed25519 public key.
+    awk '
+        NF >= 2 && $1 == "ssh-ed25519" {
+            valid = 1
+        }
+        END {
+            exit !valid
+        }
+    ' "$KEY_FILE"
+}
+
+# ---------------------------------------------------------
+# Account
+# ---------------------------------------------------------
+
+check_account()
+{
+    id "$USER_NAME" >/dev/null 2>&1 || return 1
+
+    # Do not silently modify an existing account with an
+    # unexpected home directory or login shell.
+    awk -F: \
+        -v user="$USER_NAME" \
+        -v home="$USER_HOME" \
+        -v shell="$USER_SHELL" '
+        $1 == user {
+            found = 1
+            if ($6 != home || $7 != shell)
+                exit 1
+        }
+        END {
+            if (!found)
+                exit 1
+        }
+    ' /etc/passwd || return 1
+
+    [ -d "$USER_HOME" ] || return 1
+    [ ! -L "$USER_HOME" ] || return 1
+
+    return 0
+}
+
+apply_account()
+{
+    if ! id "$USER_NAME" >/dev/null 2>&1; then
+        log "Creating account $USER_NAME"
+
+        useradd \
+            -m \
+            -d "$USER_HOME" \
+            -s "$USER_SHELL" \
+            "$USER_NAME"
+    fi
+
+    check_account ||
+        die "Account has an unexpected configuration"
+}
+
+# ---------------------------------------------------------
+# Authorized SSH key
+# ---------------------------------------------------------
+
+check_authorized_key()
+{
+    check_account || return 1
+    check_key_source || return 1
+
+    SSH_DIR=$USER_HOME/.ssh
+    AUTH_KEYS=$SSH_DIR/authorized_keys
+
+    [ -d "$SSH_DIR" ] || return 1
+    [ ! -L "$SSH_DIR" ] || return 1
+    [ -f "$AUTH_KEYS" ] || return 1
+    [ ! -L "$AUTH_KEYS" ] || return 1
+
+    # Compare key type and key material, ignoring comments.
+    awk 'NR == 1 { print $1, $2 }' "$KEY_FILE" |
+        grep -Fqx -f - "$AUTH_KEYS" &&
+        return 0
+
+    # The comparison above intentionally does not modify
+    # existing keys. The apply function performs a more
+    # explicit key-material comparison.
+    awk '
+        NR == FNR {
+            if (FNR == 1) {
+                type = $1
+                key = $2
+            }
+            next
+        }
+        $1 == type && $2 == key {
+            found = 1
+        }
+        END {
+            exit !found
+        }
+    ' "$KEY_FILE" "$AUTH_KEYS"
+}
+
+apply_authorized_key()
+{
+    check_key_source ||
+        die "Missing or invalid controller public key"
+
+    check_account ||
+        die "Account must be configured before SSH keys"
+
+    SSH_DIR=$USER_HOME/.ssh
+    AUTH_KEYS=$SSH_DIR/authorized_keys
+
+    [ ! -L "$SSH_DIR" ] ||
+        die "Refusing symlinked SSH directory"
+
+    [ ! -L "$AUTH_KEYS" ] ||
+        die "Refusing symlinked authorized_keys"
+
+    if [ ! -d "$SSH_DIR" ]; then
+        install -d -m 0700 "$SSH_DIR"
+    fi
+
+    if [ ! -f "$AUTH_KEYS" ]; then
+        install -m 0600 /dev/null "$AUTH_KEYS"
+    fi
+
+    if ! check_authorized_key; then
+        log "Installing controller public key"
+        cat "$KEY_FILE" >> "$AUTH_KEYS"
+    fi
+
+    chown "$USER_NAME" "$SSH_DIR" "$AUTH_KEYS"
+
+    chmod 0700 "$SSH_DIR"
+    chmod 0600 "$AUTH_KEYS"
+}
+
+# ---------------------------------------------------------
+# Native OpenBSD doas
+# ---------------------------------------------------------
+
+check_doas()
+{
+    [ -f "$DOAS_CONF" ] || return 1
+
+    # Check effective policy, not merely the presence
+    # of a line in the configuration file.
+    RESULT=$(
+        doas -C "$DOAS_CONF" \
+            -u root /usr/bin/id -u 2>/dev/null
+    ) || return 1
+
+    [ "$RESULT" = "permit nopass" ]
+}
+
+apply_doas()
+{
+    if check_doas; then
+        return 0
+    fi
+
+    log "Configuring doas"
+
+    TMP=$(mktemp /etc/doas.conf.XXXXXXXX) ||
+        die "Cannot create temporary doas configuration"
+
+    if [ -f "$DOAS_CONF" ]; then
+        cat "$DOAS_CONF" > "$TMP"
+    fi
+
+    printf '\n%s\n' "$DOAS_RULE" >> "$TMP"
+    chmod 0600 "$TMP"
+
+    if ! doas -C "$TMP" >/dev/null 2>&1; then
+        rm -f "$TMP"
+        die "Generated doas configuration is invalid"
+    fi
+
+    mv -f "$TMP" "$DOAS_CONF"
+
+    check_doas ||
+        die "doas policy verification failed"
+}
+
+# ---------------------------------------------------------
+# SSH daemon
+# ---------------------------------------------------------
+
+check_sshd()
+{
+    /usr/sbin/sshd -t >/dev/null 2>&1 ||
+        return 1
+
+    rcctl ls on | grep -qx sshd ||
+        return 1
+
+    rcctl check sshd >/dev/null 2>&1 ||
+        return 1
+}
+
+apply_sshd()
+{
+    /usr/sbin/sshd -t ||
+        die "Existing sshd configuration is invalid"
+
+    if ! rcctl ls on | grep -qx sshd; then
+        log "Enabling sshd"
+        rcctl enable sshd
+    fi
+
+    if ! rcctl check sshd >/dev/null 2>&1; then
+        log "Starting sshd"
+        rcctl start sshd
+    fi
+
+    check_sshd ||
+        die "sshd verification failed"
+}
+
+# ---------------------------------------------------------
+# Python
+# ---------------------------------------------------------
+
+check_python()
+{
+    [ -x "$PYTHON_BIN" ] || return 1
+
+    "$PYTHON_BIN" -c '
+import sys
+assert sys.version_info[:2] == (3, 13)
+' >/dev/null 2>&1
+}
+
+apply_python()
+{
+    if check_python; then
+        return 0
+    fi
+
+    log "Installing $PYTHON_PACKAGE"
+
+    pkg_add "$PYTHON_PACKAGE"
+
+    check_python ||
+        die "Python installation failed"
+}
+
+# ---------------------------------------------------------
+# Readiness
+# ---------------------------------------------------------
+
+check_all()
+{
+    FAILED=0
+
+    if check_key_source; then
+        log "Public key source: OK"
+    else
+        log "Public key source: MISSING OR INVALID"
+        FAILED=1
+    fi
+
+    if check_account; then
+        log "Account: OK"
+    else
+        log "Account: NOT READY"
+        FAILED=1
+    fi
+
+    if check_authorized_key; then
+        log "SSH authorized key: OK"
+    else
+        log "SSH authorized key: NOT READY"
+        FAILED=1
+    fi
+
+    if check_doas; then
+        log "doas: OK"
+    else
+        log "doas: NOT READY"
+        FAILED=1
+    fi
+
+    if check_sshd; then
+        log "sshd: OK"
+    else
+        log "sshd: NOT READY"
+        FAILED=1
+    fi
+
+    if check_python; then
+        log "Python: OK"
+    else
+        log "Python: NOT READY"
+        FAILED=1
+    fi
+
+    return "$FAILED"
+}
+
+apply_all()
+{
+    check_key_source ||
+        die "Install controller.pub before bootstrapping"
+
+    apply_account
+    apply_authorized_key
+    apply_doas
+    apply_sshd
+    apply_python
+
+    log "Verifying final configuration"
+
+    check_all ||
+        die "Bootstrap verification failed"
+
+    log "System is Ansible-ready"
+}
+
+# ---------------------------------------------------------
+# Main
+# ---------------------------------------------------------
+
+require_root
+
+case "${1:-}" in
+    check)
+        check_all
+        ;;
+    apply)
+        apply_all
+        ;;
+    *)
+        echo "Usage: $0 {check|apply}" >&2
+        exit 2
+        ;;
+esac
+
