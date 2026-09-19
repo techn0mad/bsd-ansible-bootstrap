@@ -1,0 +1,6 @@
+# Default owner for the repository
+* @techn0mad
+
+# Optional: assign OS-specific ownership
+/OpenBSD/ @techn0mad
+/FreeBSD/ @techn0mad
