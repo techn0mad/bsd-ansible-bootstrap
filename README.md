@@ -58,15 +58,18 @@ Keep the state checks, public-key validation, reconciliation flow, reporting, an
 A possible repository layout:
 
 ```text
-ansible-bootstrap/
+bsd-ansible-bootstrap/
 ├── README.md
-├── bin/ansible-bootstrap             # shared command entry point
-├── lib/                              # common checks and reconciliation
-├── platforms/
-│   ├── openbsd.sh
-│   └── freebsd.sh
-├── rc/                               # native boot wrappers
-└── tests/
+├── OpenBSD/
+│   ├── README.md
+│   ├── install.sh
+│   └── ansible-bootstrap
+└── FreeBSD/
+    ├── README.md
+    ├── install.sh
+    ├── ansible-bootstrap
+    └── rc.d/
+        └── ansible_bootstrap
 ```
 
 The initial OpenBSD prototype may remain a single script while its behavior is validated; refactor only after the FreeBSD requirements are concrete.
