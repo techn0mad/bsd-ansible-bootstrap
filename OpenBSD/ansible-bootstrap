@@ -206,14 +206,8 @@ check_doas()
 {
     [ -f "$DOAS_CONF" ] || return 1
 
-    # Check effective policy, not merely the presence
-    # of a line in the configuration file.
-    RESULT=$(
-        doas -C "$DOAS_CONF" \
-            -u root /usr/bin/id -u 2>/dev/null
-    ) || return 1
-
-    [ "$RESULT" = "permit nopass" ]
+    [ "$(su - "$USER_NAME" -c \
+        '/usr/bin/doas -n /usr/bin/id -u' 2>/dev/null)" = "0" ]
 }
 
 apply_doas()
