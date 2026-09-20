@@ -350,16 +350,26 @@ apply_account()
     fi
 }
 
-# True when the configured key is present in the given authorized_keys
-# file as an ordinary, unrestricted entry. Key presence is a separate
-# question from file ownership and permissions: conflating the two
-# would make a permission fault look like a missing key and append a
-# duplicate.
-authorized_key_present()
+# Look for the configured key in an authorized_keys file.
+#
+#   mode "exact"  an ordinary entry with no preceding options, which is
+#                 what the readiness contract requires
+#   mode "any"    the same key material wherever it appears, including
+#                 behind options such as from= or command=
+#
+# Options may be quoted and contain spaces, so the key is located by
+# scanning for the type immediately followed by its base64 material
+# rather than by assuming a field position. Comments are skipped: a
+# commented-out key must not count as present in either mode.
+#
+# Key presence is a separate question from file ownership and
+# permissions. Conflating the two would make a permission fault look
+# like a missing key and append a duplicate.
+authorized_key_match()
 {
-    [ -f "$1" ] || return 1
+    [ -f "$2" ] || return 1
 
-    awk '
+    awk -v mode="$1" '
         NR == FNR {
             if (NF >= 2) {
                 type = $1
@@ -367,11 +377,17 @@ authorized_key_present()
             }
             next
         }
-        $1 == type && $2 == key {
-            found = 1
+        /^[ \t]*#/ { next }
+        {
+            for (i = 1; i < NF; i++) {
+                if ($i != type || $(i + 1) != key)
+                    continue
+                if (mode == "any" || i == 1)
+                    found = 1
+            }
         }
         END { exit !found }
-    ' "$KEY_FILE" "$1"
+    ' "$KEY_FILE" "$2"
 }
 
 check_authorized_key()
@@ -389,7 +405,7 @@ check_authorized_key()
     expect_path "$ssh_dir" "drwx------ $ids" || return 1
     expect_path "$auth" "-rw------- $ids" || return 1
 
-    authorized_key_present "$auth"
+    authorized_key_match exact "$auth"
 }
 
 apply_authorized_key()
@@ -419,7 +435,18 @@ apply_authorized_key()
 
     [ -f "$auth" ] || die "authorized_keys is not a regular file"
 
-    if ! authorized_key_present "$auth"; then
+    if ! authorized_key_match exact "$auth"; then
+        # Already there, but behind options that restrict what it can
+        # do. Appending an unrestricted copy would duplicate the key
+        # and quietly override a deliberate administrative narrowing.
+        if authorized_key_match any "$auth"; then
+            log "The controller key is present in $auth but carries"
+            log "restricting options, so it cannot serve general"
+            log "provisioning. Refusing to append an unrestricted"
+            log "second copy of the same key."
+            die "Resolve the restricted controller key entry by hand"
+        fi
+
         log "Installing controller key: $(fingerprint "$KEY_FILE")"
         cat "$KEY_FILE" >> "$auth"
     fi

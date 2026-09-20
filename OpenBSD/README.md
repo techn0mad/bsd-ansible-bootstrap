@@ -21,7 +21,7 @@ Ansible.
 | --- | --- | --- |
 | SSH service | Base-system `sshd`, managed with `rcctl` | `sshd -t` succeeds; service is enabled and running. |
 | Service account | Dedicated `ansible` user, `/home/ansible`, login shell `/bin/ksh` | Account exists, has expected home and shell, is not administratively disabled, and can authenticate using the configured key. |
-| SSH public-key access | Root-owned bootstrap key source; account-owned `~ansible/.ssh/authorized_keys` | Configured key is present exactly once as a usable key entry; ownership and permissions are safe. |
+| SSH public-key access | Root-owned bootstrap key source; account-owned `~ansible/.ssh/authorized_keys` | Configured key is present as an ordinary, unrestricted entry; ownership and permissions are safe. |
 | Python | OpenBSD package repository via `pkg_add` | A Python interpreter compatible with the controller's `ansible-core` is executable; report its absolute path. |
 | Privilege escalation | Base-system `doas` | As `ansible`, `doas -n /usr/bin/id -u` succeeds and returns `0`. |
 
@@ -232,6 +232,31 @@ controller-to-host login before enabling unattended boot
 execution. The service should report policy conflicts rather than
 broadly rewrite `sshd_config`.
 
+Matching an entry in `authorized_keys` compares key type and base64
+material only, never the comment. Two questions are asked separately:
+
+- Is the key present as an **ordinary, unrestricted entry**? That is
+  what the readiness contract requires, and it is what `check`
+  reports on.
+- Does the key material appear **at all**, including behind options
+  such as `from=` or `command=`?
+
+The second question exists so that a key already present but
+restricted is reported as a conflict instead of being joined by an
+unrestricted second copy — appending one would both duplicate the key
+and quietly override a deliberate administrative narrowing. Because
+options may be quoted and contain spaces, the key is located by
+scanning for the type immediately followed by its material rather than
+by assuming it starts the line. Commented-out entries count as absent
+in both cases, so a disabled historical entry neither satisfies the
+contract nor blocks installing a live one.
+
+Pre-existing duplicate entries are not treated as a conflict: they are
+harmless to authentication, and failing on them would leave `check`
+reporting a fault that `apply` has no safe way to repair. The
+guarantee is narrower and more useful — this service never creates a
+duplicate.
+
 **`doas`:** OpenBSD includes `doas` in the base system. The intended
 managed policy is `permit nopass ansible as root`, but the effective
 result depends on the full rule ordering. Check it by executing a
@@ -397,9 +422,6 @@ correct at least the following:
   of the `ansible-core` release in use, and confirm `PYTHON_PACKAGE`
   exists on the target release and satisfies that range. The committed
   values are placeholders.
-- Ensure `authorized_keys` matching handles comments, options,
-  duplicates, and non-key lines without false positives; never append
-  an unusable or duplicate entry.
 - Ensure temporary-file cleanup and traps work correctly with OpenBSD
   `/bin/sh`, including the successful `init` path.
 - Distinguish deliberate account disablement and SSH policy conflicts
