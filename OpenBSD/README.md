@@ -503,13 +503,12 @@ correct at least the following:
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
-- Confirm that `ls -ldn` output is parsed correctly on the target
-  release; the ownership and permission checks depend on its column
-  layout.
 - Set `PYTHON_MIN` and `PYTHON_MAX` from the managed-node requirements
   of the `ansible-core` release in use. The committed values are
-  placeholders. The package *version* no longer needs confirming: it is
-  selected from what the repository offers.
+  placeholders, and with no upper bound the newest available
+  interpreter is installed — which may be *newer* than the controller's
+  `ansible-core` supports. The package *version* no longer needs
+  confirming: it is selected from what the repository offers.
 - Ensure temporary-file cleanup and traps work correctly with OpenBSD
   `/bin/sh`, including the successful `init` path.
 - Distinguish deliberate account disablement and SSH policy conflicts
