@@ -14,11 +14,17 @@ Ansible.
 > via `community.general.doas` reaching root, and fact gathering
 > reporting the interpreter this service installed.
 >
-> Not yet exercised: **a reboot**, so the `rc.local` hook has never
-> actually run at boot; drift repair on a host that has diverged; and
-> any release other than 7.9. Treat it as a working prototype rather
-> than a tested release, and see the checklist at the end for the
-> assumptions that remain unconfirmed.
+> A reboot has since exercised the `rc.local` hook: `apply` ran at
+> boot, repaired nothing, logged one clean readiness block, and the
+> host came up normally. It reached no network, because discovery found
+> the installed interpreter — on a healthy host the package machinery
+> never engages.
+>
+> Not yet exercised: **drift repair on a host that has actually
+> diverged**, a boot where something does need repairing, a boot with
+> the package mirror unreachable, and any release other than 7.9. Treat
+> it as a working prototype rather than a tested release, and see the
+> checklist at the end for the assumptions that remain unconfirmed.
 
 ## Readiness contract
 
@@ -561,12 +567,17 @@ OpenBSD 7.9 (see **Status** above). What follows is what that single
 run did *not* establish. Before calling this directory
 production-ready, work through at least the following:
 
-- Reboot a host with the hook enabled and confirm `apply` runs from
-  `rc.local`, logs meaningful status, and does not delay or block
-  boot. **Nothing has ever exercised the boot path.**
 - Exercise drift repair against a host that has diverged, not only a
   fresh one: remove the managed authorized key, stop and disable
-  `sshd`, and remove the interpreter, each independently.
+  `sshd`, and remove the interpreter, each independently. Every repair
+  path so far has been seen only on a host being built, never on one
+  being corrected.
+- Reboot a host that *does* need repairing. The boot path has been
+  exercised, but only where `apply` had nothing to do, so no repair has
+  ever run unattended.
+- Boot a host with the package mirror unreachable. `PKG_TIMEOUT` and
+  the bounded-command machinery have never engaged during a real boot,
+  because a healthy host never queries the repository.
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
