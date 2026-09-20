@@ -343,7 +343,14 @@ the target release before relying on a particular `getent`, `useradd`,
 or `chown` invocation.
 
 **SSH:** Use `/usr/sbin/sshd -t` to check the configuration and
-`rcctl` to inspect, enable, and start the service. The presence of a
+`rcctl` to inspect, enable, and start the service. Ask whether it is
+enabled for boot with `rcctl get sshd status`, which exits `0` when it
+is and `1` when it is not — **not** with `rcctl ls on`, which
+enumerates every service in `/etc/rc.d`. Measured on an OpenBSD 7.9
+guest, `rcctl ls on` takes 22 seconds against 0.5 or less for the
+per-service queries, and was on its own responsible for a 24-second
+`check` and a 68-second `apply`. Nothing else the engine runs costs
+more than half a second. The presence of a
 key in `authorized_keys` does not alone establish that SSH login
 works: global `sshd_config`, `Match` rules, account state, file
 permissions, or network policy may prevent access. Verify a real

@@ -609,16 +609,19 @@ apply_doas()
 check_sshd()
 {
     /usr/sbin/sshd -t >/dev/null 2>&1 || return 1
-    rcctl ls on | grep -qx sshd || return 1
+    # `rcctl get <svc> status` exits 0 when the service is enabled for
+    # boot and 1 when it is not. Do NOT substitute `rcctl ls on`: it
+    # enumerates every service in /etc/rc.d, measured at 22s on an
+    # OpenBSD 7.9 guest, and was single-handedly responsible for a
+    # 24-second check and a 68-second apply.
+    rcctl get sshd status >/dev/null 2>&1 || return 1
     rcctl check sshd >/dev/null 2>&1
 }
 
 apply_sshd()
 {
-    # Already correct: do not repeat the same three probes below and
-    # then repeat them again in the closing verification. `rcctl ls on`
-    # enumerates every service in /etc/rc.d, so it is the most
-    # expensive check here by a wide margin and worth calling once.
+    # Already correct: do not repeat the probes below and then repeat
+    # them again in the closing verification.
     check_sshd && return 0
 
     /usr/sbin/sshd -t ||
@@ -628,7 +631,7 @@ apply_sshd()
     # the way /etc/rc builds its "starting daemons:" line. In a log that
     # runs into whatever is printed next, so discard it; failures still
     # arrive on stderr, and the change is already recorded above.
-    if ! rcctl ls on | grep -qx sshd; then
+    if ! rcctl get sshd status >/dev/null 2>&1; then
         changed "Enabling sshd"
         rcctl enable sshd >/dev/null
     fi
