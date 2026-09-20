@@ -389,17 +389,29 @@ change between releases, so no single interpreter path is assumed.
 Compatibility is a version range declared at the top of the script:
 
 ```sh
-PYTHON_MIN=3.8          # managed-node minimum of the controller's ansible-core
-PYTHON_MAX=             # empty means no upper bound
+PYTHON_MIN=3.9          # managed-node range of the controller's ansible-core
+PYTHON_MAX=3.14         # empty would mean no upper bound
 PYTHON_PACKAGE_STEM=python     # exact version comes from the repository
 PYTHON_DIR=/usr/local/bin      # where packages put interpreters
 ```
 
-The range is a **prototype assumption**, not universal OpenBSD or
-Ansible policy. `PYTHON_MIN` and `PYTHON_MAX` must be set from the
-managed-node requirements of the `ansible-core` release the controller
-actually runs — "Python 3 exists" is not the test. No package *version*
-is hardcoded, so a release bump does not by itself break installation.
+The range is set for **`ansible-core` 2.21**, which supports managed
+nodes on Python 3.9 through 3.14. It is not universal OpenBSD or
+Ansible policy: re-derive it from the [support
+matrix](https://docs.ansible.com/ansible-core/devel/reference_appendices/release_and_maintenance.html)
+whenever the controller's `ansible-core` changes. "Python 3 exists" is
+not the test, and leaving `PYTHON_MAX` empty is wrong for every
+released `ansible-core`, since each has a ceiling. No package
+*version* is hardcoded, so an OpenBSD release bump does not by itself
+break installation.
+
+> **The target release constrains the controller.** OpenBSD 7.9
+> packages only Python 2.7 and 3.13 — there is no 3.12 — so a stock
+> 7.9 host can only be managed by `ansible-core` **2.18 or newer**.
+> 2.17 and earlier cap managed nodes at 3.12, and no amount of
+> configuration here can work around a version the release does not
+> ship. Check the target's `pkg_info -Q python` against the matrix
+> before assuming an older controller will do.
 
 Discovery runs before installation. The script globs `python3.N` and
 `python3.NN` in `PYTHON_DIR`, tries the newest first, and asks each
@@ -545,12 +557,10 @@ correct at least the following:
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
-- Set `PYTHON_MIN` and `PYTHON_MAX` from the managed-node requirements
-  of the `ansible-core` release in use. The committed values are
-  placeholders, and with no upper bound the newest available
-  interpreter is installed — which may be *newer* than the controller's
-  `ansible-core` supports. The package *version* no longer needs
-  confirming: it is selected from what the repository offers.
+- Re-derive `PYTHON_MIN` and `PYTHON_MAX` whenever the controller's
+  `ansible-core` changes. The committed values suit 2.21; an older
+  controller has a lower ceiling, and one older than 2.18 cannot
+  manage a stock OpenBSD 7.9 host at all.
 - Ensure temporary-file cleanup and traps work correctly with OpenBSD
   `/bin/sh`, including the successful `init` path.
 - Distinguish deliberate account disablement and SSH policy conflicts

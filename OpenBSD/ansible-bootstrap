@@ -36,11 +36,13 @@ DOAS_END='# END ansible-bootstrap'
 DOAS_LEGACY='# Managed by ansible-bootstrap'
 
 # Managed-node interpreter requirements of the ansible-core release
-# the controller runs. These are NOT universal OpenBSD or Ansible
-# policy: confirm them against that release before relying on them.
-# PYTHON_MAX may be empty, meaning no upper bound.
-PYTHON_MIN=3.8
-PYTHON_MAX=
+# the controller runs. Set here for ansible-core 2.21, which supports
+# managed nodes on Python 3.9 through 3.14. Re-derive these from the
+# support matrix when the controller's ansible-core changes; they are
+# not universal OpenBSD or Ansible policy. PYTHON_MAX may be empty,
+# meaning no upper bound, but every released ansible-core has one.
+PYTHON_MIN=3.9
+PYTHON_MAX=3.14
 
 # Package stem of the interpreter. The exact version to install is
 # chosen from what the repository actually offers, so no release-

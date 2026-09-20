@@ -183,6 +183,12 @@ the installed interpreter, and report its absolute path for inventory
 configuration. Avoid unbounded upgrades or package churn on every
 boot.
 
+That constraint runs in both directions. A target OS packages only the
+interpreters it packages, and if the newest of those is outside the
+controller's `ansible-core` range, no configuration on the target can
+reconcile them — the controller has to move. Check what the target
+release actually offers before assuming a given `ansible-core` will do.
+
 ## Validation plan
 
 Test on disposable VMs for each supported OS:
