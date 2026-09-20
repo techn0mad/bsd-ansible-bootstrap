@@ -70,9 +70,29 @@ PKG_TIMEOUT=300
 EX_NOTREADY=1
 EX_CONFIG=2
 
+CHANGES=0
+
 log()
 {
     printf 'ansible-bootstrap: %s\n' "$*" >&2
+}
+
+# Record a modification to the host. Counted so a run can say whether
+# it changed anything, and prefixed so the whole history of changes can
+# be grepped back out of an append-only boot log.
+changed()
+{
+    CHANGES=$((CHANGES + 1))
+    log "change: $*"
+}
+
+# A run header. Without one, successive boots append indistinguishable
+# blocks with no indication of when they happened or what was asked
+# for. The clock is set from the RTC before rc.local runs, so a
+# boot-time stamp is trustworthy to within whatever ntpd corrects later.
+log_header()
+{
+    log "--- $(date -u '+%Y-%m-%dT%H:%M:%SZ') $1 ---"
 }
 
 die()
@@ -260,7 +280,7 @@ init_key()
     chmod 0600 "$KEY_FILE"
     chown root:wheel "$KEY_FILE"
 
-    log "Controller public key saved"
+    changed "Controller public key saved"
 }
 
 # The key file is the local trust anchor: a key an unprivileged user
@@ -288,7 +308,7 @@ apply_key_source()
     validate_key "$KEY_FILE" ||
         die_config "Initialize the controller public key first"
 
-    log "Repairing ownership and permissions of $KEY_FILE"
+    changed "Repairing ownership and permissions of $KEY_FILE"
 
     chown root:wheel "$CONFIG_DIR" "$KEY_FILE"
     chmod 0700 "$CONFIG_DIR"
@@ -335,7 +355,7 @@ check_account()
 apply_account()
 {
     if ! id "$ACCOUNT" >/dev/null 2>&1; then
-        log "Creating $ACCOUNT account"
+        changed "Creating $ACCOUNT account"
 
         # No usable password; SSH public-key authentication is
         # configured separately.
@@ -450,7 +470,7 @@ apply_authorized_key()
             die "Resolve the restricted controller key entry by hand"
         fi
 
-        log "Installing controller key: $(fingerprint "$KEY_FILE")"
+        changed "Installing controller key: $(fingerprint "$KEY_FILE")"
         cat "$KEY_FILE" >> "$auth"
     fi
 
@@ -460,13 +480,13 @@ apply_authorized_key()
     # every run hid the fact that something had changed them, and left
     # a no-op apply still writing to files it need not touch.
     if ! expect_path "$ssh_dir" "drwx------ $ids"; then
-        log "Repairing ownership and permissions of $ssh_dir"
+        changed "Repairing ownership and permissions of $ssh_dir"
         chown "$uid:$gid" "$ssh_dir"
         chmod 0700 "$ssh_dir"
     fi
 
     if ! expect_path "$auth" "-rw------- $ids"; then
-        log "Repairing ownership and permissions of $auth"
+        changed "Repairing ownership and permissions of $auth"
         chown "$uid:$gid" "$auth"
         chmod 0600 "$auth"
     fi
@@ -550,7 +570,7 @@ apply_doas()
         die "Refusing to override administrator doas policy"
     fi
 
-    log "Configuring passwordless doas"
+    changed "Configuring passwordless doas"
 
     [ ! -L "$DOAS_CONF" ] ||
         die "Refusing symlinked doas.conf"
@@ -604,14 +624,18 @@ apply_sshd()
     /usr/sbin/sshd -t ||
         die "Existing sshd configuration is invalid"
 
+    # rcctl writes the daemon name to stdout with no trailing newline,
+    # the way /etc/rc builds its "starting daemons:" line. In a log that
+    # runs into whatever is printed next, so discard it; failures still
+    # arrive on stderr, and the change is already recorded above.
     if ! rcctl ls on | grep -qx sshd; then
-        log "Enabling sshd"
-        rcctl enable sshd
+        changed "Enabling sshd"
+        rcctl enable sshd >/dev/null
     fi
 
     if ! rcctl check sshd >/dev/null 2>&1; then
-        log "Starting sshd"
-        rcctl start sshd
+        changed "Starting sshd"
+        rcctl start sshd >/dev/null
     fi
 
     check_sshd || die "sshd is not ready"
@@ -760,7 +784,7 @@ apply_python()
         die "No installable Python interpreter found"
     fi
 
-    log "Installing $package"
+    changed "Installing $package"
 
     # pkg_add's exit status is not a trustworthy install-succeeded
     # signal: it reports a package it cannot find as a warning. Log a
@@ -818,20 +842,31 @@ apply_all()
     apply_python
 
     check_all || die "Final readiness verification failed"
-    log "System is Ansible-ready"
+
+    # Say whether this run actually did anything. On a boot hook that
+    # runs every time, "did it repair drift or find nothing to do?" is
+    # the question a log is read to answer.
+    case "$CHANGES" in
+        0) log "System is Ansible-ready; no changes were needed" ;;
+        1) log "System is Ansible-ready; 1 change made" ;;
+        *) log "System is Ansible-ready; $CHANGES changes made" ;;
+    esac
 }
 
 require_root
 
 case "${1:-}" in
     init)
+        log_header init
         init_key
         apply_all
         ;;
     check)
+        log_header check
         check_all
         ;;
     apply)
+        log_header apply
         apply_all
         ;;
     *)

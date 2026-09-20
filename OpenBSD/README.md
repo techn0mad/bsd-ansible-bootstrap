@@ -14,17 +14,17 @@ Ansible.
 > via `community.general.doas` reaching root, and fact gathering
 > reporting the interpreter this service installed.
 >
-> A reboot has since exercised the `rc.local` hook: `apply` ran at
-> boot, repaired nothing, logged one clean readiness block, and the
-> host came up normally. It reached no network, because discovery found
-> the installed interpreter — on a healthy host the package machinery
-> never engages.
+> Reboots have since exercised the `rc.local` hook in both states. On a
+> healthy host `apply` repaired nothing and reached no network, because
+> discovery found the installed interpreter. On a host with `sshd`
+> deliberately disabled, the boot-time `apply` re-enabled and restarted
+> it unattended — the first repair to run without a person present.
 >
-> Not yet exercised: **drift repair on a host that has actually
-> diverged**, a boot where something does need repairing, a boot with
-> the package mirror unreachable, and any release other than 7.9. Treat
-> it as a working prototype rather than a tested release, and see the
-> checklist at the end for the assumptions that remain unconfirmed.
+> Not yet exercised: the other repair paths (a removed authorized key,
+> a removed interpreter), a boot with the package mirror unreachable,
+> and any release other than 7.9. Treat it as a working prototype
+> rather than a tested release, and see the checklist at the end for
+> the assumptions that remain unconfirmed.
 
 ## Readiness contract
 
@@ -56,6 +56,25 @@ The initial single-script layout is:
 /etc/rc.local                           # existing local boot script; preserve contents
 /var/log/ansible-bootstrap.log          # boot-time output
 ```
+
+The log is append-only across boots, so each run opens with a header
+naming the subcommand and a UTC timestamp, and every modification is
+recorded on a `change:` line. A run closes by saying whether it
+changed anything:
+
+```text
+ansible-bootstrap: --- 2026-09-20T14:23:01Z apply ---
+ansible-bootstrap: change: Enabling sshd
+ansible-bootstrap: change: Starting sshd
+...
+ansible-bootstrap: System is Ansible-ready; 2 changes made
+```
+
+`grep 'change:' /var/log/ansible-bootstrap.log` is then the full
+history of what this service has done to the host. On a boot hook that
+runs every time, "did it repair drift or find nothing to do?" is the
+question the log gets read to answer, and a run that changed nothing
+says so explicitly rather than looking identical to one that did.
 
 These modes are **verified, not merely set**. `check` asserts the
 exact ownership and permissions listed above for the configuration
@@ -585,14 +604,10 @@ OpenBSD 7.9 (see **Status** above). What follows is what that single
 run did *not* establish. Before calling this directory
 production-ready, work through at least the following:
 
-- Exercise drift repair against a host that has diverged, not only a
-  fresh one: remove the managed authorized key, stop and disable
-  `sshd`, and remove the interpreter, each independently. Every repair
-  path so far has been seen only on a host being built, never on one
-  being corrected.
-- Reboot a host that *does* need repairing. The boot path has been
-  exercised, but only where `apply` had nothing to do, so no repair has
-  ever run unattended.
+- Exercise the remaining repair paths against a diverged host. A
+  disabled `sshd` has been repaired unattended at boot; removing the
+  managed authorized key, and removing the interpreter, have not been
+  tried.
 - Boot a host with the package mirror unreachable. `PKG_TIMEOUT` and
   the bounded-command machinery have never engaged during a real boot,
   because a healthy host never queries the repository.
