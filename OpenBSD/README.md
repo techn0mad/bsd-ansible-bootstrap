@@ -7,13 +7,18 @@ provisionable by Ansible**. It runs a short reconciliation pass at
 boot and exits; it is not a resident daemon and does not replace
 Ansible.
 
-> **Status:** Implementation design and an early v0.2 prototype,
-> initially targeted at an OpenBSD 7.9 guest. The prototype shown in
-> the project discussion has **not** been validated end to end. Do not
-> enable it at boot on a production host until the platform commands,
-> failure paths, and tests below have been verified. This document
-> describes the intended behavior and calls out gaps in that prototype
-> rather than asserting they are already implemented.
+> **Status:** Validated once on an OpenBSD 7.9 guest, against a
+> controller running `ansible-core` 2.21. A fresh host reached all five
+> invariants, and from the controller: key-only SSH login as `ansible`,
+> `doas -n id -u` returning `0`, `ansible -m ping` succeeding, `become`
+> via `community.general.doas` reaching root, and fact gathering
+> reporting the interpreter this service installed.
+>
+> Not yet exercised: **a reboot**, so the `rc.local` hook has never
+> actually run at boot; drift repair on a host that has diverged; and
+> any release other than 7.9. Treat it as a working prototype rather
+> than a tested release, and see the checklist at the end for the
+> assumptions that remain unconfirmed.
 
 ## Readiness contract
 
@@ -551,9 +556,17 @@ unversioned `python3` symlink exists.
 
 ## Known prototype gaps / implementation checklist
 
-The earlier v0.2 script is a starting point, **not a tested
-release**. Before calling this directory production-ready, review and
-correct at least the following:
+A full install and a controller-side Ansible run have now succeeded on
+OpenBSD 7.9 (see **Status** above). What follows is what that single
+run did *not* establish. Before calling this directory
+production-ready, work through at least the following:
+
+- Reboot a host with the hook enabled and confirm `apply` runs from
+  `rc.local`, logs meaningful status, and does not delay or block
+  boot. **Nothing has ever exercised the boot path.**
+- Exercise drift repair against a host that has diverged, not only a
+  fresh one: remove the managed authorized key, stop and disable
+  `sshd`, and remove the interpreter, each independently.
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
