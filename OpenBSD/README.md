@@ -348,9 +348,18 @@ enabled for boot with `rcctl get sshd status`, which exits `0` when it
 is and `1` when it is not — **not** with `rcctl ls on`, which
 enumerates every service in `/etc/rc.d`. Measured on an OpenBSD 7.9
 guest, `rcctl ls on` takes 22 seconds against 0.5 or less for the
-per-service queries, and was on its own responsible for a 24-second
-`check` and a 68-second `apply`. Nothing else the engine runs costs
-more than half a second. The presence of a
+per-service queries. It was on its own responsible for a 24-second
+`check` and a 68-second `apply`; replacing it brought those to 5s and
+11s. Nothing else the engine runs costs more than half a second.
+
+What remains is not a hotspot. A `check` forks roughly forty small
+processes — `awk`, `ls`, `ssh-keygen`, `getent`, plus a subshell per
+command substitution — and on a guest where process creation costs tens
+of milliseconds that is most of the time. Reducing it further means
+forking less, not finding another slow command; the obvious candidate
+is that `check_authorized_key` re-runs `check_key_source` and
+`check_account`, which `check_all` has already run, and which are
+repeated so the predicate stays meaningful when called on its own. The presence of a
 key in `authorized_keys` does not alone establish that SSH login
 works: global `sshd_config`, `Match` rules, account state, file
 permissions, or network policy may prevent access. Verify a real
