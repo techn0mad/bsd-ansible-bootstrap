@@ -245,9 +245,10 @@ reconciliation:
 
 Re-running the installer is safe: the engine is reinstalled, `init`
 accepts a matching controller key without replacing it, and the boot
-hook is appended at most once. The installer refuses to modify
-`/etc/rc.local` if it is a symbolic link, and preserves any existing
-contents.
+hook is added once and thereafter updated in place rather than
+duplicated. The installer refuses to modify `/etc/rc.local` if it is a
+symbolic link, and preserves unrelated contents along with the file's
+ownership and mode.
 
 ## Command interface
 
@@ -495,15 +496,32 @@ append only one invocation:
 # BEGIN ansible-bootstrap
 # Maintain Ansible readiness; this is a short-lived boot task.
 if [ -x /usr/local/libexec/ansible-bootstrap ]; then
-    /usr/local/libexec/ansible-bootstrap apply >> /var/log/ansible-bootstrap.log 2>&1
+    echo 'ansible-bootstrap: reconciling Ansible readiness'
+    if /usr/local/libexec/ansible-bootstrap apply \
+        >> /var/log/ansible-bootstrap.log 2>&1
+    then
+        echo 'ansible-bootstrap: ready'
+    else
+        echo 'ansible-bootstrap: FAILED, see /var/log/ansible-bootstrap.log'
+    fi
 fi
 # END ansible-bootstrap
 ```
 
-`install.sh --enable-boot-hook` writes exactly this block, and the
-marker comments let a later run recognize it instead of appending a
-second copy. Adding it by hand is equally supported; keep the markers
-so the installer stays idempotent.
+`/etc/rc` runs `rc.local` with `sh(1)` — it is executed, not sourced —
+and its output reaches the console, which is why the block announces
+itself. Without that, boot shows an unexplained pause, and a failed
+reconciliation is visible only to someone who thinks to read the
+log. There is no `starting local daemons:` line to append to on
+OpenBSD 7.9: `rc.local` runs on its own after the package-daemon
+block closes, so whole lines are the right form rather than `echo -n`.
+
+`install.sh --enable-boot-hook` writes exactly this block. The marker
+comments let a later run find it and **replace** it, so a changed hook
+reaches hosts that already have an older one; unrelated `rc.local`
+content, and the file's ownership and mode, are preserved. Adding the
+block by hand is equally supported — keep the markers, or the
+installer will append a second copy.
 
 Enable this **only after** manual `init`, `check`, `apply`, SSH login,
 and `doas` tests succeed — which is why the installer withholds the
