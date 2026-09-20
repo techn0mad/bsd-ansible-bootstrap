@@ -358,30 +358,53 @@ Compatibility is a version range declared at the top of the script:
 ```sh
 PYTHON_MIN=3.8          # managed-node minimum of the controller's ansible-core
 PYTHON_MAX=             # empty means no upper bound
-PYTHON_PACKAGE='python%3.13'   # installed only when nothing compatible exists
+PYTHON_PACKAGE_STEM=python     # exact version comes from the repository
 PYTHON_DIR=/usr/local/bin      # where packages put interpreters
 ```
 
-These are **prototype assumptions**, not universal OpenBSD or Ansible
-policy. `PYTHON_MIN` and `PYTHON_MAX` must be set from the
+The range is a **prototype assumption**, not universal OpenBSD or
+Ansible policy. `PYTHON_MIN` and `PYTHON_MAX` must be set from the
 managed-node requirements of the `ansible-core` release the controller
-actually runs — "Python 3 exists" is not the test — and
-`PYTHON_PACKAGE` must be available on the target release and must
-itself satisfy that range.
+actually runs — "Python 3 exists" is not the test. No package *version*
+is hardcoded, so a release bump does not by itself break installation.
 
 Discovery runs before installation. The script globs `python3.N` and
 `python3.NN` in `PYTHON_DIR`, tries the newest first, and asks each
 candidate to evaluate the range itself, so nothing depends on parsing
 a file name. Only versioned names are considered: an unversioned
 `python3` symlink may be absent, and its target can change underneath
-the inventory. `pkg_add` runs only when no candidate qualifies, which
+the inventory. Nothing is installed when a candidate qualifies, which
 is what keeps repeated boots from causing package churn.
 
-That `pkg_add` is bounded by `PKG_TIMEOUT` (300 seconds). It runs in
-its own process group with stdin closed, so an unreachable mirror is
-terminated — together with the fetch process it spawned — and a tool
-that decides to ask a question fails instead of waiting at boot for an
-answer that will never come. The failure is logged with the network
+When none qualifies, the *available* package is discovered the same
+way rather than assumed. `pkg_info -Q python` is matched against the
+configured range and the newest result is installed by its fully
+qualified name. Two traps make that less obvious than it sounds:
+
+- `pkg_info -Q` matches substrings, so its output also contains
+  unrelated packages (`bpython`, `py3-GitPython`), subpackages
+  (`python-tkinter-3.13.13`), and debug packages
+  (`debug-python-3.13.13`). Only lines where the stem is followed
+  immediately by a digit are the interpreter itself.
+- An unqualified stem is ambiguous. `pkg_add python` prompts to choose
+  between 2.7 and 3.x, which at boot would mean waiting on input that
+  never arrives. Installing the fully qualified name removes the
+  prompt outright, rather than depending on what `pkg_add` does when
+  its stdin is closed.
+
+`pkg_add`'s exit status is **not** treated as proof of success: it
+reports a package it cannot find as a warning rather than an error. A
+non-zero status is logged, but the gate is re-running interpreter
+discovery afterwards and confirming a usable interpreter now exists.
+
+Both package operations — the query and the install — are bounded by
+`PKG_TIMEOUT` (300 seconds). Each runs in its own process group with
+stdin closed, so an unreachable mirror is terminated together with the
+fetch process it spawned, and a tool that decides to ask a question
+fails instead of waiting at boot for an answer that will never
+come. Being unable to *reach* the repository and the repository having
+nothing *suitable* are reported differently, because they need
+different fixes. The failure is logged with the network
 and `PKG_PATH` causes to check, `apply` exits `1`, and boot continues;
 a later boot or a manual `apply` retries. The shell may add its own
 job-control notice (`Terminated: 15`) to the log when it reaps the
@@ -484,9 +507,9 @@ correct at least the following:
   release; the ownership and permission checks depend on its column
   layout.
 - Set `PYTHON_MIN` and `PYTHON_MAX` from the managed-node requirements
-  of the `ansible-core` release in use, and confirm `PYTHON_PACKAGE`
-  exists on the target release and satisfies that range. The committed
-  values are placeholders.
+  of the `ansible-core` release in use. The committed values are
+  placeholders. The package *version* no longer needs confirming: it is
+  selected from what the repository offers.
 - Ensure temporary-file cleanup and traps work correctly with OpenBSD
   `/bin/sh`, including the successful `init` path.
 - Distinguish deliberate account disablement and SSH policy conflicts
@@ -494,11 +517,11 @@ correct at least the following:
 - Confirm `set -m` job control and process-group signalling behave as
   expected in OpenBSD `/bin/sh`; `run_bounded` relies on them to
   terminate `pkg_add` together with its fetch process.
-- Confirm that `su ansible -c ...` emits nothing of its own on the
-  target release. OpenBSD `ksh` reads `$ENV` only for interactive
-  shells, so a non-interactive `-c` should be silent, but the `doas`
-  check compares the whole output against `0` and any stray line makes
-  it fail.
+- Confirm whether `wait` preserves a background job's exit status under
+  `set -m` in OpenBSD `/bin/sh`. `run_bounded` depends on it, and a
+  first test run did not produce the diagnostic that a failing
+  `pkg_add` should have triggered. It is not yet established whether
+  that was the shell losing the status or `pkg_add` exiting zero.
 - The `ftp` and `tar` invocation under "Getting the files onto the
   host" has been run on OpenBSD. Note that OpenBSD `tar` is the `pax`
   binary: arguments after `f -` are member-name patterns, not options,

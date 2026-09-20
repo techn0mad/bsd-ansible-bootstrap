@@ -42,9 +42,10 @@ DOAS_LEGACY='# Managed by ansible-bootstrap'
 PYTHON_MIN=3.8
 PYTHON_MAX=
 
-# Installed only when no compatible interpreter is already present.
-# Must itself satisfy PYTHON_MIN and PYTHON_MAX.
-PYTHON_PACKAGE='python%3.13'
+# Package stem of the interpreter. The exact version to install is
+# chosen from what the repository actually offers, so no release-
+# specific version is hardcoded here.
+PYTHON_PACKAGE_STEM=python
 
 # Where OpenBSD packages install interpreters.
 PYTHON_DIR=/usr/local/bin
@@ -662,6 +663,61 @@ check_python()
     find_python >/dev/null
 }
 
+# Print the fully qualified name of the newest available package whose
+# stem is exactly the interpreter and whose version satisfies the
+# configured range, or return 1 if the repository offers none.
+#
+# Two traps here. pkg_info -Q matches substrings, so asking for
+# "python" also returns unrelated packages (bpython, py3-GitPython),
+# subpackages (python-tkinter-3.13.13), and debug packages
+# (debug-python-3.13.13); requiring the stem at the start of the line
+# followed immediately by a digit selects only the interpreter itself.
+# And an unqualified stem is ambiguous — `pkg_add python` prompts to
+# choose between 2.7 and 3.x — so the exact name is what gets
+# installed, which removes the prompt rather than relying on pkg_add's
+# behaviour when its stdin is closed.
+# Returns 2 if the repository could not be queried at all and 1 if it
+# was queried but offers nothing suitable. Those are different faults
+# and get different diagnostics.
+find_python_package()
+{
+    available=$(run_bounded "$PKG_TIMEOUT" \
+        pkg_info -Q "$PYTHON_PACKAGE_STEM") || return 2
+
+    printf '%s\n' "$available" |
+        awk -v stem="$PYTHON_PACKAGE_STEM" \
+            -v min="$PYTHON_MIN" -v max="$PYTHON_MAX" '
+        function cmp(amaj, aminr, bmaj, bminr, bn) {
+            if (amaj != bmaj) return (amaj < bmaj) ? -1 : 1
+            # A bound naming only a major version constrains only it.
+            if (bn < 2) return 0
+            if (aminr != bminr) return (aminr < bminr) ? -1 : 1
+            return 0
+        }
+        BEGIN {
+            minn = split(min, mp, ".")
+            if (max != "") maxn = split(max, xp, ".")
+        }
+        $0 ~ "^" stem "-[0-9]" {
+            v = substr($0, length(stem) + 2)
+            sub(/p[0-9]+$/, "", v)
+            n = split(v, part, ".")
+            maj = part[1] + 0
+            minr = (n >= 2) ? part[2] + 0 : 0
+
+            if (cmp(maj, minr, mp[1] + 0, mp[2] + 0, minn) < 0) next
+            if (max != "" && cmp(maj, minr, xp[1] + 0, xp[2] + 0, maxn) > 0) next
+
+            if (best == "" || maj > bmaj || (maj == bmaj && minr > bminr)) {
+                bmaj = maj
+                bminr = minr
+                best = $0
+            }
+        }
+        END { if (best == "") exit 1; print best }
+    '
+}
+
 apply_python()
 {
     # Discovery before installation: any compatible interpreter
@@ -669,17 +725,36 @@ apply_python()
     # every boot would be pure churn.
     check_python && return 0
 
-    log "No compatible Python interpreter found; installing $PYTHON_PACKAGE"
+    log "No compatible Python interpreter is installed; querying packages"
 
-    if ! run_bounded "$PKG_TIMEOUT" pkg_add "$PYTHON_PACKAGE"; then
-        log "pkg_add failed or exceeded ${PKG_TIMEOUT}s. Check network"
-        log "reachability and PKG_PATH; boot continues, and a later boot"
-        log "or a manual apply will retry."
-        die "Could not install $PYTHON_PACKAGE"
+    status=0
+    package=$(find_python_package) || status=$?
+
+    if [ "$status" -ne 0 ]; then
+        if [ "$status" -eq 2 ]; then
+            log "Could not query the package repository within ${PKG_TIMEOUT}s."
+            log "Check network reachability and PKG_PATH."
+        else
+            log "The repository offers no $PYTHON_PACKAGE_STEM package within the"
+            log "configured range (minimum $PYTHON_MIN${PYTHON_MAX:+, maximum $PYTHON_MAX})."
+            log "Confirm that range against the ansible-core release in use."
+        fi
+
+        log "Boot continues; a later boot or a manual apply will retry."
+        die "No installable Python interpreter found"
+    fi
+
+    log "Installing $package"
+
+    # pkg_add's exit status is not a trustworthy install-succeeded
+    # signal: it reports a package it cannot find as a warning. Log a
+    # failure, but let the verification below be the gate.
+    if ! run_bounded "$PKG_TIMEOUT" pkg_add "$package"; then
+        log "pkg_add reported failure or exceeded ${PKG_TIMEOUT}s"
     fi
 
     python_path=$(find_python) ||
-        die "$PYTHON_PACKAGE did not provide an interpreter satisfying" \
+        die "Installed $package but no interpreter in $PYTHON_DIR satisfies" \
             "Python >= $PYTHON_MIN"
 
     log "Installed Python interpreter: $python_path"
