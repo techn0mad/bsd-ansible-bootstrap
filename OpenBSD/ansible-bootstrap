@@ -26,10 +26,46 @@ LOGIN_SHELL=/bin/ksh
 
 CONFIG_DIR=/etc/ansible-bootstrap
 KEY_FILE=$CONFIG_DIR/controller.pub
-DOAS_CONF=/etc/doas.conf
 
+DOAS_CONF=/etc/doas.conf
+DOAS_BEGIN='# BEGIN ansible-bootstrap'
+DOAS_END='# END ansible-bootstrap'
+
+# The v0.2 marker, recognized so an upgrade does not append a second
+# copy of the rule.
+DOAS_LEGACY='# Managed by ansible-bootstrap'
+
+# Managed-node interpreter requirements of the ansible-core release
+# the controller runs. These are NOT universal OpenBSD or Ansible
+# policy: confirm them against that release before relying on them.
+# PYTHON_MAX may be empty, meaning no upper bound.
+PYTHON_MIN=3.8
+PYTHON_MAX=
+
+# Installed only when no compatible interpreter is already present.
+# Must itself satisfy PYTHON_MIN and PYTHON_MAX.
 PYTHON_PACKAGE='python%3.13'
-PYTHON_BIN=/usr/local/bin/python3.13
+
+# Where OpenBSD packages install interpreters.
+PYTHON_DIR=/usr/local/bin
+
+# Wall-clock bound in seconds on a package operation. rc.local is a
+# startup script, not a supervised service manager: an unreachable
+# mirror must fail and return control to the boot sequence rather than
+# stall it indefinitely.
+PKG_TIMEOUT=300
+
+# Exit-status contract:
+#   0  ready, or reconciliation succeeded
+#   1  a prerequisite is missing, or reconciliation failed
+#   2  invalid invocation, or this service's own configuration is
+#      absent, malformed, or unsafe
+#
+# The dividing line: status 2 means the inputs are wrong and repeating
+# the run cannot help; status 1 means the managed host state is wrong,
+# which a later boot or a manual apply may resolve.
+EX_NOTREADY=1
+EX_CONFIG=2
 
 log()
 {
@@ -39,12 +75,101 @@ log()
 die()
 {
     log "ERROR: $*"
-    exit 1
+    exit "$EX_NOTREADY"
+}
+
+die_config()
+{
+    log "ERROR: $*"
+    exit "$EX_CONFIG"
 }
 
 require_root()
 {
-    [ "$(id -u)" -eq 0 ] || die "Run as root"
+    [ "$(id -u)" -eq 0 ] || die_config "Run as root"
+}
+
+# Mode string and numeric owner and group of a path, as
+# "<ten-character mode> <uid> <gid>". Empty if the path is absent.
+# ls(1) is used because stat(1) format flags are not portable across
+# the BSDs; -n keeps the IDs numeric so no name lookup is involved.
+path_status()
+{
+    ls -ldn "$1" 2>/dev/null |
+        awk 'NR == 1 { print substr($1, 1, 10), $3, $4 }'
+}
+
+# True when a path has exactly the expected "<mode> <uid> <gid>".
+expect_path()
+{
+    [ "$(path_status "$1")" = "$2" ]
+}
+
+# True when a path is writable by neither group nor other, which is
+# what sshd's StrictModes requires of a home directory. Positions 6
+# and 9 of the mode string are the group and other write bits.
+owner_writable_only()
+{
+    mode=$(path_status "$1")
+    mode=${mode%% *}
+
+    [ -n "$mode" ] || return 1
+
+    case "$mode" in
+        ?????w????) return 1 ;;
+        ????????w?) return 1 ;;
+    esac
+}
+
+# Run a command under a wall-clock bound, returning its own exit
+# status, or 124 if it had to be killed. Implemented with a poll loop
+# rather than timeout(1) so there is no dependency to confirm on the
+# target release. stdin is closed: a package tool that decides to ask
+# a question must fail rather than wait at boot for an answer that
+# will never come.
+run_bounded()
+{
+    limit=$1
+    shift
+
+    # Job control puts the command in its own process group, so the
+    # whole group can be signalled. Killing only the direct child
+    # would leave pkg_add's fetch process running and holding the
+    # descriptors it inherited.
+    set -m
+    "$@" < /dev/null &
+    bounded_pid=$!
+    set +m
+
+    waited=0
+    while [ "$waited" -lt "$limit" ]; do
+        kill -0 "$bounded_pid" 2>/dev/null || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "$bounded_pid" 2>/dev/null; then
+        log "Exceeded ${limit}s; terminating: $*"
+
+        # Fall back to the single process if this shell did not make
+        # the job a group leader.
+        signal_bounded TERM
+        sleep 2
+        signal_bounded KILL
+
+        wait "$bounded_pid" 2>/dev/null
+
+        return 124
+    fi
+
+    wait "$bounded_pid"
+}
+
+signal_bounded()
+{
+    kill "-$1" "-$bounded_pid" 2>/dev/null ||
+        kill "-$1" "$bounded_pid" 2>/dev/null ||
+        return 0
 }
 
 # Compare SSH key type and base64 material, ignoring comments.
@@ -85,12 +210,12 @@ report_key()
 init_key()
 {
     [ -n "${ANSIBLE_PUBLIC_KEY:-}" ] ||
-        die "Set ANSIBLE_PUBLIC_KEY to an SSH public key"
+        die_config "Set ANSIBLE_PUBLIC_KEY to an SSH public key"
 
     [ ! -L "$CONFIG_DIR" ] ||
-        die "Refusing symlinked configuration directory"
+        die_config "Refusing symlinked configuration directory"
 
-    install -d -m 0700 "$CONFIG_DIR"
+    install -d -o root -g wheel -m 0700 "$CONFIG_DIR"
 
     tmp=$(mktemp "$CONFIG_DIR/controller.pub.XXXXXXXX") ||
         die "Cannot create temporary key file"
@@ -102,14 +227,14 @@ init_key()
     chmod 0600 "$tmp"
 
     validate_key "$tmp" ||
-        die "Invalid public key; expected one Ed25519 key"
+        die_config "Invalid public key; expected one Ed25519 key"
 
     actual=$(fingerprint "$tmp")
     log "Supplied public key fingerprint: $actual"
 
     if [ -n "${ANSIBLE_EXPECTED_FINGERPRINT:-}" ]; then
         [ "$actual" = "$ANSIBLE_EXPECTED_FINGERPRINT" ] ||
-            die "Fingerprint does not match expected value"
+            die_config "Fingerprint does not match expected value"
         log "Expected fingerprint verified"
     else
         log "WARNING: No independent expected fingerprint supplied"
@@ -118,10 +243,10 @@ init_key()
     # Refuse to silently replace an existing controller key.
     if [ -e "$KEY_FILE" ] || [ -L "$KEY_FILE" ]; then
         validate_key "$KEY_FILE" ||
-            die "Existing controller key is invalid"
+            die_config "Existing controller key is invalid"
 
         if [ "$(key_fields "$tmp")" != "$(key_fields "$KEY_FILE")" ]; then
-            die "A different controller key already exists; refusing replacement"
+            die_config "A different controller key already exists; refusing replacement"
         fi
 
         log "Existing controller key matches"
@@ -135,9 +260,38 @@ init_key()
     log "Controller public key saved"
 }
 
+# The key file is the local trust anchor: a key an unprivileged user
+# can rewrite is worthless, so ownership and permissions are part of
+# the invariant, not just the contents.
 check_key_source()
 {
-    validate_key "$KEY_FILE"
+    validate_key "$KEY_FILE" || return 1
+
+    [ ! -L "$CONFIG_DIR" ] || return 1
+
+    expect_path "$CONFIG_DIR" "drwx------ 0 0" || return 1
+    expect_path "$KEY_FILE" "-rw------- 0 0"
+}
+
+# Repair ownership and permissions of the stored key. Never creates or
+# replaces the key itself; that is init's responsibility.
+apply_key_source()
+{
+    check_key_source && return 0
+
+    [ ! -L "$CONFIG_DIR" ] ||
+        die_config "Refusing symlinked configuration directory"
+
+    validate_key "$KEY_FILE" ||
+        die_config "Initialize the controller public key first"
+
+    log "Repairing ownership and permissions of $KEY_FILE"
+
+    chown root:wheel "$CONFIG_DIR" "$KEY_FILE"
+    chmod 0700 "$CONFIG_DIR"
+    chmod 0600 "$KEY_FILE"
+
+    check_key_source || die "Key configuration verification failed"
 }
 
 # Use the account database, not a guessed passwd-file layout.
@@ -146,16 +300,33 @@ account_record()
     getent passwd "$ACCOUNT"
 }
 
+# Numeric uid and gid of the account, as "<uid> <gid>". The passwd
+# entry is the single source of truth for both checking and setting
+# ownership, so neither depends on a group that happens to share the
+# account name.
+account_ids()
+{
+    record=$(account_record) || return 1
+
+    printf '%s\n' "$record" | awk -F: '{ print $3, $4 }'
+}
+
 check_account()
 {
     record=$(account_record) || return 1
 
+    uid=$(printf '%s\n' "$record" | awk -F: '{print $3}')
     home=$(printf '%s\n' "$record" | awk -F: '{print $6}')
     shell=$(printf '%s\n' "$record" | awk -F: '{print $7}')
 
     [ "$home" = "$HOME_DIR" ] || return 1
     [ "$shell" = "$LOGIN_SHELL" ] || return 1
     [ -d "$HOME_DIR" ] && [ ! -L "$HOME_DIR" ] || return 1
+
+    # sshd refuses public-key authentication when the home directory
+    # is owned by anyone else or is writable by group or other.
+    [ "$(path_status "$HOME_DIR" | awk '{print $2}')" = "$uid" ] || return 1
+    owner_writable_only "$HOME_DIR"
 }
 
 apply_account()
@@ -169,22 +340,25 @@ apply_account()
             -p '*' "$ACCOUNT"
     fi
 
-    check_account ||
-        die "Account exists but has an unexpected home or shell"
+    # The home directory belongs to the administrator, not to this
+    # service; report a conflict rather than relaxing or tightening it.
+    if ! check_account; then
+        log "The $ACCOUNT account must have home $HOME_DIR, shell"
+        log "$LOGIN_SHELL, and a home directory that it owns and that"
+        log "is not writable by group or other."
+        die "Account does not satisfy the readiness contract"
+    fi
 }
 
-check_authorized_key()
+# True when the configured key is present in the given authorized_keys
+# file as an ordinary, unrestricted entry. Key presence is a separate
+# question from file ownership and permissions: conflating the two
+# would make a permission fault look like a missing key and append a
+# duplicate.
+authorized_key_present()
 {
-    check_key_source && check_account || return 1
+    [ -f "$1" ] || return 1
 
-    ssh_dir=$HOME_DIR/.ssh
-    auth=$ssh_dir/authorized_keys
-
-    [ -d "$ssh_dir" ] && [ ! -L "$ssh_dir" ] || return 1
-    [ -f "$auth" ] && [ ! -L "$auth" ] || return 1
-
-    # The required key must be present as an ordinary,
-    # unrestricted authorized_keys entry.
     awk '
         NR == FNR {
             if (NF >= 2) {
@@ -197,12 +371,30 @@ check_authorized_key()
             found = 1
         }
         END { exit !found }
-    ' "$KEY_FILE" "$auth"
+    ' "$KEY_FILE" "$1"
+}
+
+check_authorized_key()
+{
+    check_key_source && check_account || return 1
+
+    ids=$(account_ids) || return 1
+
+    ssh_dir=$HOME_DIR/.ssh
+    auth=$ssh_dir/authorized_keys
+
+    [ -d "$ssh_dir" ] && [ ! -L "$ssh_dir" ] || return 1
+    [ -f "$auth" ] && [ ! -L "$auth" ] || return 1
+
+    expect_path "$ssh_dir" "drwx------ $ids" || return 1
+    expect_path "$auth" "-rw------- $ids" || return 1
+
+    authorized_key_present "$auth"
 }
 
 apply_authorized_key()
 {
-    check_key_source || die "Controller public key is missing or invalid"
+    check_key_source || die_config "Controller public key is missing or invalid"
 
     ssh_dir=$HOME_DIR/.ssh
     auth=$ssh_dir/authorized_keys
@@ -210,25 +402,34 @@ apply_authorized_key()
     [ ! -L "$ssh_dir" ] && [ ! -L "$auth" ] ||
         die "Refusing symlinked SSH paths"
 
+    ids=$(account_ids) || die "No passwd entry for $ACCOUNT"
+
+    uid=${ids%% *}
+    gid=${ids##* }
+
+    # Created root-owned, then given to the account below, so the
+    # ownership rule lives in exactly one place.
     if [ ! -d "$ssh_dir" ]; then
-        install -d -m 0700 -o "$ACCOUNT" -g "$ACCOUNT" "$ssh_dir"
+        install -d -m 0700 "$ssh_dir"
     fi
 
     if [ ! -e "$auth" ]; then
-        install -m 0600 -o "$ACCOUNT" -g "$ACCOUNT" \
-            /dev/null "$auth"
+        install -m 0600 /dev/null "$auth"
     fi
 
     [ -f "$auth" ] || die "authorized_keys is not a regular file"
 
-    if ! check_authorized_key; then
+    if ! authorized_key_present "$auth"; then
         log "Installing controller key: $(fingerprint "$KEY_FILE")"
         cat "$KEY_FILE" >> "$auth"
     fi
 
-    chown "$ACCOUNT:$ACCOUNT" "$ssh_dir" "$auth"
+    chown "$uid:$gid" "$ssh_dir" "$auth"
     chmod 0700 "$ssh_dir"
     chmod 0600 "$auth"
+
+    check_authorized_key ||
+        die "authorized_keys verification failed"
 }
 
 # Test the effective doas policy as the ansible user.
@@ -243,35 +444,88 @@ check_doas()
     [ "$result" = 0 ]
 }
 
+# True when a previous run already wrote the managed rule.
+managed_doas_rule()
+{
+    [ -f "$DOAS_CONF" ] || return 1
+
+    grep -Fqx "$DOAS_BEGIN" "$DOAS_CONF" ||
+        grep -Fqx "$DOAS_LEGACY" "$DOAS_CONF"
+}
+
+# True when any rule the administrator wrote names the account.
+# Appending a permit rule after such a rule would silently override a
+# deliberate policy decision.
+administrator_doas_rule()
+{
+    [ -f "$DOAS_CONF" ] || return 1
+
+    awk -v account="$ACCOUNT" '
+        /^[ \t]*#/ { next }
+        NF == 0 { next }
+        {
+            for (i = 1; i <= NF; i++)
+                if ($i == account)
+                    found = 1
+        }
+        END { exit !found }
+    ' "$DOAS_CONF"
+}
+
 apply_doas()
 {
     check_doas && return 0
+
+    # The rule is already installed but is not effective. Appending
+    # another copy would not change the outcome and would grow
+    # doas.conf by two lines on every boot.
+    if managed_doas_rule; then
+        log "$DOAS_CONF already contains the managed rule for $ACCOUNT,"
+        log "but doas -n still fails. A later rule may override it, or"
+        log "the account may be locked or otherwise unusable."
+        die "Refusing to append a duplicate doas rule; resolve this by hand"
+    fi
+
+    # An existing rule naming the account is a deliberate
+    # administrative decision; report the conflict, do not outrank it.
+    if administrator_doas_rule; then
+        log "$DOAS_CONF already has a rule naming $ACCOUNT that does not"
+        log "permit passwordless root access."
+        die "Refusing to override administrator doas policy"
+    fi
 
     log "Configuring passwordless doas"
 
     [ ! -L "$DOAS_CONF" ] ||
         die "Refusing symlinked doas.conf"
 
-    tmp=$(mktemp /etc/doas.conf.XXXXXXXX) ||
+    doas_tmp=$(mktemp "$DOAS_CONF.XXXXXXXX") ||
         die "Cannot create temporary doas configuration"
 
     if [ -f "$DOAS_CONF" ]; then
-        cat "$DOAS_CONF" > "$tmp"
+        cat "$DOAS_CONF" > "$doas_tmp"
     fi
 
-    # Last matching rule wins in doas.conf.
-    printf '\n# Managed by ansible-bootstrap\n' >> "$tmp"
-    printf 'permit nopass %s as root\n' "$ACCOUNT" >> "$tmp"
+    # Last matching rule wins in doas.conf, so the managed block goes
+    # at the end. The markers let later runs recognize it.
+    {
+        printf '\n%s\n' "$DOAS_BEGIN"
+        printf 'permit nopass %s as root\n' "$ACCOUNT"
+        printf '%s\n' "$DOAS_END"
+    } >> "$doas_tmp"
 
-    chmod 0600 "$tmp"
-    chown root:wheel "$tmp"
+    chmod 0600 "$doas_tmp"
+    chown root:wheel "$doas_tmp"
 
-    if ! doas -C "$tmp" >/dev/null 2>&1; then
-        rm -f "$tmp"
+    if ! doas -C "$doas_tmp" >/dev/null 2>&1; then
+        rm -f "$doas_tmp"
         die "Generated doas configuration is invalid"
     fi
 
-    mv "$tmp" "$DOAS_CONF"
+    mv "$doas_tmp" "$DOAS_CONF" || {
+        rm -f "$doas_tmp"
+        die "Cannot install $DOAS_CONF"
+    }
 
     check_doas || die "Effective doas policy verification failed"
 }
@@ -301,24 +555,81 @@ apply_sshd()
     check_sshd || die "sshd is not ready"
 }
 
+# True when the given interpreter satisfies the configured version
+# range. The candidate does the comparison itself, so there is no
+# shell-side version arithmetic and no dependence on its file name.
+python_compatible()
+{
+    "$1" -c '
+import sys
+
+def parse(text):
+    return tuple(int(part) for part in text.split("."))
+
+wanted = parse(sys.argv[1])
+if sys.version_info[:len(wanted)] < wanted:
+    sys.exit(1)
+
+if sys.argv[2]:
+    ceiling = parse(sys.argv[2])
+    if sys.version_info[:len(ceiling)] > ceiling:
+        sys.exit(1)
+' "$PYTHON_MIN" "$PYTHON_MAX" >/dev/null 2>&1
+}
+
+# Print the absolute path of the newest compatible interpreter, or
+# return 1 when there is none. Only versioned names are considered: an
+# unversioned python3 symlink may be absent, and its target can change
+# underneath the inventory.
+find_python()
+{
+    ordered=
+
+    # The globs yield ascending versions, so prepending each match
+    # leaves the list in descending order.
+    for candidate in "$PYTHON_DIR"/python3.[0-9] \
+                     "$PYTHON_DIR"/python3.[0-9][0-9]
+    do
+        [ -x "$candidate" ] || continue
+        ordered="$candidate${ordered:+ }$ordered"
+    done
+
+    for candidate in $ordered; do
+        if python_compatible "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 check_python()
 {
-    [ -x "$PYTHON_BIN" ] || return 1
-
-    "$PYTHON_BIN" -c '
-import sys
-assert sys.version_info[:2] == (3, 13)
-' >/dev/null 2>&1
+    find_python >/dev/null
 }
 
 apply_python()
 {
+    # Discovery before installation: any compatible interpreter
+    # already on the host satisfies the contract, and reinstalling on
+    # every boot would be pure churn.
     check_python && return 0
 
-    log "Installing $PYTHON_PACKAGE"
-    pkg_add "$PYTHON_PACKAGE"
+    log "No compatible Python interpreter found; installing $PYTHON_PACKAGE"
 
-    check_python || die "Python installation or verification failed"
+    if ! run_bounded "$PKG_TIMEOUT" pkg_add "$PYTHON_PACKAGE"; then
+        log "pkg_add failed or exceeded ${PKG_TIMEOUT}s. Check network"
+        log "reachability and PKG_PATH; boot continues, and a later boot"
+        log "or a manual apply will retry."
+        die "Could not install $PYTHON_PACKAGE"
+    fi
+
+    python_path=$(find_python) ||
+        die "$PYTHON_PACKAGE did not provide an interpreter satisfying" \
+            "Python >= $PYTHON_MIN"
+
+    log "Installed Python interpreter: $python_path"
 }
 
 check_all()
@@ -332,7 +643,7 @@ check_all()
         failed=1
     fi
 
-    for item in account authorized_key doas sshd python; do
+    for item in account authorized_key doas sshd; do
         if "check_$item"; then
             log "$item: OK"
         else
@@ -341,14 +652,21 @@ check_all()
         fi
     done
 
+    # Reported rather than merely confirmed: the controller needs this
+    # absolute path for ansible_python_interpreter.
+    if python_path=$(find_python); then
+        log "python: OK (ansible_python_interpreter=$python_path)"
+    else
+        log "python: NOT READY (no interpreter >= $PYTHON_MIN found)"
+        failed=1
+    fi
+
     return "$failed"
 }
 
 apply_all()
 {
-    check_key_source ||
-        die "Initialize the controller public key first"
-
+    apply_key_source
     apply_account
     apply_authorized_key
     apply_doas
@@ -374,6 +692,6 @@ case "${1:-}" in
         ;;
     *)
         echo "Usage: $0 {init|check|apply}" >&2
-        exit 2
+        exit "$EX_CONFIG"
         ;;
 esac
