@@ -562,6 +562,67 @@ later boot or manual `apply` retries.
 files during OS installation, but is not the ongoing reconciliation
 mechanism.
 
+## Controller-side tests
+
+`controller-test.sh` runs the checks the engine cannot perform on
+itself. It lives here rather than on the target: it is executed **from
+the Ansible controller**, against a host that has already been
+provisioned.
+
+```sh
+./controller-test.sh 192.168.1.87
+```
+
+```text
+preflight
+  ok    ansible runs (ansible [core 2.21.4])
+  ok    become plugin available: community.general.doas
+
+ssh
+  ok    key-only login as ansible
+  ok    authorized_keys contains this key (SHA256:aWo3...)
+  ok    doas -n id -u returns 0
+
+ansible
+  ok    ping module
+  ok    fact gathering
+        ansible_distribution = OpenBSD
+        ansible_python_version = 3.13.13
+        interpreter   = /usr/local/bin/python3.13
+  ok    become via community.general.doas reaches root
+
+8 passed, 0 failed
+```
+
+Options: `-u` account, `-i` identity, `-p` to force an interpreter
+path rather than letting Ansible discover one, `-m` become method, `-t`
+connect timeout. It exits non-zero if any check fails.
+
+Why these checks and not others — each one asserts something the
+engine's own `check` cannot:
+
+- The engine can confirm a key is in `authorized_keys`; only a real
+  login proves `sshd` will accept it. `IdentitiesOnly=yes` is set so a
+  loaded agent cannot quietly offer a different key and make a broken
+  `authorized_keys` look fine, and `BatchMode=yes` so an unknown host
+  key fails instead of prompting.
+- Comparing the fingerprint in `authorized_keys` against the
+  controller's own key proves the target trusts *this* key and not
+  merely some key — which catches a rotated or replaced controller key
+  that would otherwise surface much later as a mystifying auth failure.
+- The engine tests `doas` through `su`; Ansible reaches it over SSH
+  through a become plugin. Those are different paths and both can fail
+  independently.
+- Fact gathering exercises the interpreter far harder than `ping`, and
+  reports the path Ansible actually chose — the value that belongs in
+  inventory.
+
+`-a` additionally runs `apply` on the target twice and asserts the
+second run reports no changes, which is the idempotency property the
+whole design rests on. It is not the default because, unlike everything
+else here, it modifies the host. It requires an engine recent enough to
+report change counts.
+
 ## Manual validation
 
 Use a disposable VM or snapshot. Do not rely on the prototype until

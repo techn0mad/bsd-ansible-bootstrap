@@ -109,6 +109,7 @@ bsd-ansible-bootstrap/
 ├── OpenBSD/
 │   ├── README.md
 │   ├── install.sh
+│   ├── controller-test.sh
 │   └── ansible-bootstrap
 └── FreeBSD/
     ├── README.md

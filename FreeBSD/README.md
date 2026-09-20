@@ -116,6 +116,9 @@ Most of the engine is not OS-specific and should not be forked:
 - the permission and ownership predicates
 - the bounded-command helper
 - the exit-status contract and the check/apply/report structure
+- `controller-test.sh`, which is almost entirely platform-independent:
+  only the become method and the interpreter path differ, and both are
+  already options rather than constants
 
 The genuinely platform-specific surface is small: account creation,
 package installation, privilege-escalation configuration, service
