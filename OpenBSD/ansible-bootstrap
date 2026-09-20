@@ -595,6 +595,12 @@ check_sshd()
 
 apply_sshd()
 {
+    # Already correct: do not repeat the same three probes below and
+    # then repeat them again in the closing verification. `rcctl ls on`
+    # enumerates every service in /etc/rc.d, so it is the most
+    # expensive check here by a wide margin and worth calling once.
+    check_sshd && return 0
+
     /usr/sbin/sshd -t ||
         die "Existing sshd configuration is invalid"
 
