@@ -127,6 +127,49 @@ the reconciliation engine.
 
 ## Installation
 
+### Getting the files onto the host
+
+A freshly installed OpenBSD host has no Git, so fetch an archive with
+base-system `ftp(1)`, which speaks HTTPS and follows redirects.
+OpenBSD ships `/etc/ssl/cert.pem`, so certificate verification works on
+a minimal install with nothing added.
+
+```sh
+# As root on the target. Substitute the commit you intend to deploy.
+rev=1565d49
+ftp -o - "https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/$rev" |
+    tar xzf - -s '|^[^/]*/||'
+cd OpenBSD
+```
+
+Notes on that command:
+
+- Use `codeload.github.com` rather than the `github.com/.../archive/...`
+  URL the web UI offers; the latter is a redirect to the former, so
+  only the direct form works with a client that does not follow
+  redirects.
+- The archive's top-level directory is named after the repository and
+  the ref, so it has to be stripped. OpenBSD `tar` has no
+  `--strip-components`, hence `-s '|^[^/]*/||'`. On FreeBSD the
+  equivalents are `fetch` and `tar --strip-components=1`.
+- Executable bits survive the round trip; `install.sh` and
+  `ansible-bootstrap` arrive mode 0755.
+
+**Pin a commit or a tag, not a branch.** `refs/heads/main` works
+(`.../tar.gz/refs/heads/main`) but resolves to whatever is on that
+branch at the moment you run it, which is the wrong property for
+something that provisions hosts. Do not pin the *archive's* checksum
+either — GitHub has changed archive generation before, churning
+checksums for unchanged commits. Pin the ref and verify file contents.
+
+This is the "separately authenticated download" channel described in
+[Initialization and trust](#initialization-and-trust) above. Note that
+the repository README lists remote execution of arbitrary downloaded
+scripts as a non-goal: extract the archive and read what you got, then
+run `install.sh` from it. Do not pipe a download into a shell.
+
+### Running the installer
+
 `install.sh` copies the engine into place, runs `init` with the
 supplied public key, and verifies readiness. It does **not** enable
 the boot hook by default:
@@ -450,6 +493,9 @@ correct at least the following:
   shells, so a non-interactive `-c` should be silent, but the `doas`
   check compares the whole output against `0` and any stray line makes
   it fail.
+- Confirm the `ftp` and `tar -s` invocation under "Getting the files
+  onto the host" on the target release. The archive URLs and layout
+  were verified, but those two commands were not run on OpenBSD.
 - Verify real remote SSH login and Ansible module execution, not
   merely local file/service checks.
 

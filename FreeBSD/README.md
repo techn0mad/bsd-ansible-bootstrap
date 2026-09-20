@@ -69,6 +69,23 @@ one-shot command, and no dependency loop that can delay or block
 multi-user boot. `rc.d` gives better ordering control than `rc.local`,
 which is a genuine improvement over the OpenBSD arrangement.
 
+**Getting the files onto the host.** The OpenBSD README fetches an
+archive with base `ftp(1)`; FreeBSD has no `ftp` for this and uses
+`fetch(1)` instead, which also follows redirects. `tar` accepts
+`--strip-components=1` rather than OpenBSD's `-s` expression, so the
+FreeBSD form is the more conventional one:
+
+```sh
+fetch -o - "https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/$rev" |
+    tar xzf - --strip-components=1
+```
+
+Certificate verification needs a CA bundle. FreeBSD 12.2 and later
+ship one in base via `certctl(8)`; older releases need
+`security/ca_root_nss`. Confirm this on the target release — on
+OpenBSD it is unconditionally present, so this is a new failure mode
+rather than a renamed one.
+
 **Login shell.** `/bin/ksh` does not exist on FreeBSD. `/bin/sh` is
 the obvious choice. The bootstrap program itself is already
 `#!/bin/sh` and FreeBSD's `/bin/sh` is POSIX, but every shell
