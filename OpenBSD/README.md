@@ -138,8 +138,8 @@ a minimal install with nothing added.
 # As root on the target. Substitute the commit you intend to deploy.
 rev=1565d49
 ftp -o - "https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/$rev" |
-    tar xzf - -s '|^[^/]*/||'
-cd OpenBSD
+    tar xzf -
+cd "bsd-ansible-bootstrap-$rev/OpenBSD"
 ```
 
 Notes on that command:
@@ -148,10 +148,16 @@ Notes on that command:
   URL the web UI offers; the latter is a redirect to the former, so
   only the direct form works with a client that does not follow
   redirects.
-- The archive's top-level directory is named after the repository and
-  the ref, so it has to be stripped. OpenBSD `tar` has no
-  `--strip-components`, hence `-s '|^[^/]*/||'`. On FreeBSD the
-  equivalents are `fetch` and `tar --strip-components=1`.
+- The archive's top-level directory is named `<repository>-<ref>`, so
+  it is predictable and there is no need to strip it — just `cd` into
+  it. A `refs/heads/NAME` ref appears as just `NAME`.
+- **Pass no patterns and no options after `f -`.** OpenBSD's `tar` is
+  the `pax` binary and treats trailing arguments as member-name
+  patterns, not options, so something like `tar xzf - -s '...'`
+  silently extracts *nothing* and warns that the patterns were not
+  matched. FreeBSD's `tar` is libarchive and does accept
+  `--strip-components=1` there, but the form above needs no such
+  option and works on both.
 - Executable bits survive the round trip; `install.sh` and
   `ansible-bootstrap` arrive mode 0755.
 
@@ -493,9 +499,11 @@ correct at least the following:
   shells, so a non-interactive `-c` should be silent, but the `doas`
   check compares the whole output against `0` and any stray line makes
   it fail.
-- Confirm the `ftp` and `tar -s` invocation under "Getting the files
-  onto the host" on the target release. The archive URLs and layout
-  were verified, but those two commands were not run on OpenBSD.
+- The `ftp` and `tar` invocation under "Getting the files onto the
+  host" has been run on OpenBSD. Note that OpenBSD `tar` is the `pax`
+  binary: arguments after `f -` are member-name patterns, not options,
+  and unmatched patterns mean nothing is extracted. Do not reintroduce
+  a `-s` or `--strip-components` form there.
 - Verify real remote SSH login and Ansible module execution, not
   merely local file/service checks.
 

@@ -71,14 +71,20 @@ which is a genuine improvement over the OpenBSD arrangement.
 
 **Getting the files onto the host.** The OpenBSD README fetches an
 archive with base `ftp(1)`; FreeBSD has no `ftp` for this and uses
-`fetch(1)` instead, which also follows redirects. `tar` accepts
-`--strip-components=1` rather than OpenBSD's `-s` expression, so the
-FreeBSD form is the more conventional one:
+`fetch(1)` instead, which also follows redirects:
 
 ```sh
 fetch -o - "https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/$rev" |
-    tar xzf - --strip-components=1
+    tar xzf -
+cd "bsd-ansible-bootstrap-$rev/FreeBSD"
 ```
+
+The two `tar` implementations differ here and the difference bites.
+FreeBSD's is libarchive and accepts `--strip-components=1`, including
+after `f -`; OpenBSD's is the `pax` binary, which reads trailing
+arguments as member-name patterns instead, so an option there causes a
+silent extraction of nothing. The form above passes no options beyond
+`xzf` and works on both, which is why it is the documented one.
 
 Certificate verification needs a CA bundle. FreeBSD 12.2 and later
 ship one in base via `certctl(8)`; older releases need
