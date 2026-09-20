@@ -9,6 +9,10 @@
 # unless --enable-boot-hook is given: enable it only after the manual
 # validation steps in README.md have succeeded.
 #
+# ANSIBLE_PUBLIC_KEY and ANSIBLE_EXPECTED_FINGERPRINT are read from the
+# environment if set, and prompted for otherwise when run on a
+# terminal. Never supply an SSH private key by either route.
+#
 
 set -eu
 
@@ -48,6 +52,9 @@ Usage: $0 [--enable-boot-hook]
                       $BOOT_FILE so it runs on every boot. Do this
                       only after the manual validation steps in
                       README.md succeed.
+
+ANSIBLE_PUBLIC_KEY and ANSIBLE_EXPECTED_FINGERPRINT are taken from the
+environment when set, and prompted for otherwise if run on a terminal.
 EoF
 }
 
@@ -93,8 +100,57 @@ done
 [ -f ./ansible-bootstrap ] ||
     die_config "Run this installer from the OpenBSD directory of the repo/archive"
 
-[ -n "${ANSIBLE_PUBLIC_KEY:-}" ] ||
-    die_config "ANSIBLE_PUBLIC_KEY is required"
+# Ask for anything not already in the environment, so the interactive
+# case needs no setup. An unattended run has no terminal, and there a
+# missing value is an error rather than a question nobody can answer.
+#
+# Prompting is also the better channel: a key passed in the environment
+# reaches the shell's history and is visible in process listings and
+# diagnostics, which the README warns against. Nothing typed here
+# reaches either.
+if [ -z "${ANSIBLE_PUBLIC_KEY:-}" ]; then
+    [ -t 0 ] ||
+        die_config "ANSIBLE_PUBLIC_KEY is required; no terminal to prompt on"
+
+    cat <<'EoF'
+
+Paste the Ansible controller's PUBLIC key -- the contents of its .pub
+file. Never paste a private key: this host must never hold one.
+
+EoF
+    printf 'Controller public key: '
+    IFS= read -r ANSIBLE_PUBLIC_KEY ||
+        die_config "No input read; this host has not been changed"
+
+    case "$ANSIBLE_PUBLIC_KEY" in
+        '')
+            die_config "No public key supplied"
+            ;;
+        *PRIVATE*KEY*)
+            die_config "That is a PRIVATE key; supply the public key instead"
+            ;;
+    esac
+fi
+
+# Tested with +set rather than :- so that an explicitly empty value
+# from an unattended caller is respected as "deliberately none".
+if [ -z "${ANSIBLE_EXPECTED_FINGERPRINT+set}" ] && [ -t 0 ]; then
+    cat <<'EoF'
+
+Optionally supply that key's SHA256 fingerprint, obtained from the
+controller through a channel independent of the key itself -- one that
+travelled with the key proves nothing. Press Enter to skip.
+
+EoF
+    printf 'Expected fingerprint: '
+    IFS= read -r ANSIBLE_EXPECTED_FINGERPRINT ||
+        ANSIBLE_EXPECTED_FINGERPRINT=
+    echo
+fi
+
+: "${ANSIBLE_EXPECTED_FINGERPRINT:=}"
+
+export ANSIBLE_PUBLIC_KEY ANSIBLE_EXPECTED_FINGERPRINT
 
 # Install the engine.
 install -d -m 0755 /usr/local/libexec

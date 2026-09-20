@@ -91,9 +91,11 @@ cat ~/.ssh/ansible_ed25519.pub
 ```
 
 Supply the **public** key to the OpenBSD console or another trusted
-installer channel. The proposed `init` interface accepts it through
+installer channel. The engine's `init` accepts it through
 `ANSIBLE_PUBLIC_KEY` and optionally accepts an independently obtained
-`ANSIBLE_EXPECTED_FINGERPRINT`:
+`ANSIBLE_EXPECTED_FINGERPRINT`. Invoking the engine directly, as
+below, is the low-level route; `install.sh` prompts for both and is
+what [Installation](#installation) uses:
 
 ```sh
 # On the OpenBSD console, as root; substitute the actual values.
@@ -177,17 +179,48 @@ run `install.sh` from it. Do not pipe a download into a shell.
 ### Running the installer
 
 `install.sh` copies the engine into place, runs `init` with the
-supplied public key, and verifies readiness. It does **not** enable
-the boot hook by default:
+controller public key, and verifies readiness. It does **not** enable
+the boot hook by default. Run it on the console as root, from this
+directory, and answer the two prompts:
+
+```text
+# ./install.sh
+
+Paste the Ansible controller's PUBLIC key -- the contents of its .pub
+file. Never paste a private key: this host must never hold one.
+
+Controller public key: ssh-ed25519 AAAA... ansible-controller
+
+Optionally supply that key's SHA256 fingerprint, obtained from the
+controller through a channel independent of the key itself -- one that
+travelled with the key proves nothing. Press Enter to skip.
+
+Expected fingerprint: SHA256:...
+```
+
+Prompting is the preferred route, and not only for convenience: a key
+passed in the environment reaches the shell's history and is visible in
+process listings and diagnostics. Nothing typed at these prompts does.
+A pasted private key is refused outright, as is an empty response to
+the first prompt.
+
+For an unattended install — a provider provisioning hook, or
+`/etc/rc.firsttime` — set the values in the environment instead and
+they are used without prompting:
 
 ```sh
-# On the OpenBSD console, as root, from this directory.
 ANSIBLE_PUBLIC_KEY='ssh-ed25519 AAAA... ansible-controller'
 ANSIBLE_EXPECTED_FINGERPRINT='SHA256:...'
 export ANSIBLE_PUBLIC_KEY ANSIBLE_EXPECTED_FINGERPRINT
 ./install.sh
 unset ANSIBLE_PUBLIC_KEY ANSIBLE_EXPECTED_FINGERPRINT
 ```
+
+With no terminal to prompt on, a missing `ANSIBLE_PUBLIC_KEY` is an
+error rather than a question nobody can answer, so an unattended run
+fails immediately instead of hanging. Setting
+`ANSIBLE_EXPECTED_FINGERPRINT` to an empty value is honoured as
+"deliberately none" and is not prompted for either.
 
 On success the installer prints the `rc.local` snippet it *would*
 have added and stops. Work through "Manual validation" below —
