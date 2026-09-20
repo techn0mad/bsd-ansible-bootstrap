@@ -425,10 +425,19 @@ qualified name. Two traps make that less obvious than it sounds:
   prompt outright, rather than depending on what `pkg_add` does when
   its stdin is closed.
 
-`pkg_add`'s exit status is **not** treated as proof of success: it
-reports a package it cannot find as a warning rather than an error. A
-non-zero status is logged, but the gate is re-running interpreter
-discovery afterwards and confirming a usable interpreter now exists.
+`pkg_add`'s exit status is **not** treated as proof of success. On
+OpenBSD 7.9 it reports a package it cannot find as a warning and still
+exits `0`. A non-zero status is logged, but the gate is re-running
+interpreter discovery afterwards and confirming a usable interpreter
+now exists.
+
+For the same reason the query is judged by its output rather than only
+its status: an empty result is read as a failed query, since any
+reachable repository returns many packages matching `python` as a
+substring. `run_bounded` itself is sound — OpenBSD `/bin/sh` does
+preserve a background job's exit status under `set -m` — so a status
+that does arrive can be believed; it is the package tools that report
+failure inconsistently.
 
 Both package operations — the query and the install — are bounded by
 `PKG_TIMEOUT` (300 seconds). Each runs in its own process group with
@@ -549,11 +558,11 @@ correct at least the following:
 - Confirm `set -m` job control and process-group signalling behave as
   expected in OpenBSD `/bin/sh`; `run_bounded` relies on them to
   terminate `pkg_add` together with its fetch process.
-- Confirm whether `wait` preserves a background job's exit status under
-  `set -m` in OpenBSD `/bin/sh`. `run_bounded` depends on it, and a
-  first test run did not produce the diagnostic that a failing
-  `pkg_add` should have triggered. It is not yet established whether
-  that was the shell losing the status or `pkg_add` exiting zero.
+- Treat any package tool's exit status as advisory. `pkg_add` reports a
+  package it cannot find as a warning and still exits `0` (confirmed on
+  7.9), so success must be established by re-checking actual state, and
+  a query that returns nothing must be read as a failed query rather
+  than an empty repository.
 - The `ftp` and `tar` invocation under "Getting the files onto the
   host" has been run on OpenBSD. Note that OpenBSD `tar` is the `pax`
   binary: arguments after `f -` are member-name patterns, not options,

@@ -684,6 +684,14 @@ find_python_package()
     available=$(run_bounded "$PKG_TIMEOUT" \
         pkg_info -Q "$PYTHON_PACKAGE_STEM") || return 2
 
+    # Empty output means the query did not really work: any reachable
+    # repository returns many packages matching the stem as a
+    # substring. Do not rely on the exit status alone to notice —
+    # pkg_add is known to report a package it cannot find as a warning
+    # and still exit zero, and pkg_info may do the same. Reporting
+    # this as "nothing suitable" would point at the wrong fix.
+    [ -n "$available" ] || return 2
+
     printf '%s\n' "$available" |
         awk -v stem="$PYTHON_PACKAGE_STEM" \
             -v min="$PYTHON_MIN" -v max="$PYTHON_MAX" '
