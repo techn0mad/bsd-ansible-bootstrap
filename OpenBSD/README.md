@@ -591,8 +591,6 @@ production-ready, work through at least the following:
   binary: arguments after `f -` are member-name patterns, not options,
   and unmatched patterns mean nothing is extracted. Do not reintroduce
   a `-s` or `--strip-components` form there.
-- Verify real remote SSH login and Ansible module execution, not
-  merely local file/service checks.
 
 The repository-wide [README](../README.md) defines the cross-platform
 contract. This document defines the OpenBSD-specific implementation
