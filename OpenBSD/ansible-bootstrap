@@ -451,20 +451,46 @@ apply_authorized_key()
         cat "$KEY_FILE" >> "$auth"
     fi
 
-    chown "$uid:$gid" "$ssh_dir" "$auth"
-    chmod 0700 "$ssh_dir"
-    chmod 0600 "$auth"
+    # Repair only what is actually wrong, and say so. These are files
+    # this service creates and owns, and the contract names their
+    # modes, so correcting them is right — but doing it silently on
+    # every run hid the fact that something had changed them, and left
+    # a no-op apply still writing to files it need not touch.
+    if ! expect_path "$ssh_dir" "drwx------ $ids"; then
+        log "Repairing ownership and permissions of $ssh_dir"
+        chown "$uid:$gid" "$ssh_dir"
+        chmod 0700 "$ssh_dir"
+    fi
+
+    if ! expect_path "$auth" "-rw------- $ids"; then
+        log "Repairing ownership and permissions of $auth"
+        chown "$uid:$gid" "$auth"
+        chmod 0600 "$auth"
+    fi
 
     check_authorized_key ||
         die "authorized_keys verification failed"
 }
 
 # Test the effective doas policy as the ansible user.
+#
+# Deliberately NOT a login shell: `su -` would source /etc/profile and
+# ~/.profile, whose output would be captured along with the command's
+# and break the comparison below on a host where doas works fine. A
+# non-login shell is also the more faithful test, because Ansible runs
+# `ssh host command`, which is not a login shell either. Nothing here
+# needs the login environment — doas and id are invoked by absolute
+# path.
+#
+# The whole output must be exactly "0". Matching loosely, to tolerate
+# stray output, would risk reading a bare 0 printed by something else
+# as proof of success; failing on unexpected output is the safer
+# direction.
 check_doas()
 {
     [ -f "$DOAS_CONF" ] || return 1
 
-    result=$(su - "$ACCOUNT" -c \
+    result=$(su "$ACCOUNT" -c \
         '/usr/bin/doas -n /usr/bin/id -u' 2>/dev/null) ||
         return 1
 

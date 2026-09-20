@@ -51,8 +51,14 @@ exact ownership and permissions listed above for the configuration
 directory, the stored key, `.ssh`, and `authorized_keys`, so a
 successful `check` means `apply` would change nothing — a `check` that
 only inspected file contents could report readiness on a host whose
-`authorized_keys` was world-writable. `apply` repairs the paths it
-owns and re-verifies them.
+`authorized_keys` was world-writable.
+
+`apply` repairs the paths it owns and re-verifies them, but only those
+that are actually wrong, and it logs each repair. Correcting them is
+right: this service creates these files and the contract names their
+modes. Doing it unconditionally and silently was not, because it hid
+the fact that something had changed them and left a no-op `apply`
+writing to files it had no need to touch.
 
 The account's home directory is not on that list: its mode belongs to
 the administrator. It is checked only against what sshd's
@@ -265,6 +271,16 @@ itself is not a substitute for this test. Changes to `/etc/doas.conf`
 must preserve unrelated policy and be validated before atomic
 replacement.
 
+That test uses a **non-login** shell (`su ansible -c ...`, not `su -`).
+A login shell would source `/etc/profile` and `~/.profile`, and their
+output would be captured along with the command's, so the check would
+fail permanently on a host where `doas` works. A non-login shell is
+also the more faithful test: Ansible runs `ssh host command`, which is
+not a login shell either. The command's whole output must be exactly
+`0` — matching loosely to tolerate stray output would risk reading a
+bare `0` printed by something else as proof of success, and failing on
+unexpected output is the safer direction.
+
 The managed rule is written as a marked block appended to the end of
 the file, where the last matching rule wins:
 
@@ -429,6 +445,11 @@ correct at least the following:
 - Confirm `set -m` job control and process-group signalling behave as
   expected in OpenBSD `/bin/sh`; `run_bounded` relies on them to
   terminate `pkg_add` together with its fetch process.
+- Confirm that `su ansible -c ...` emits nothing of its own on the
+  target release. OpenBSD `ksh` reads `$ENV` only for interactive
+  shells, so a non-interactive `-c` should be silent, but the `doas`
+  check compares the whole output against `0` and any stray line makes
+  it fail.
 - Verify real remote SSH login and Ansible module execution, not
   merely local file/service checks.
 
