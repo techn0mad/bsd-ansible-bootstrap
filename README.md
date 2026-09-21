@@ -83,10 +83,12 @@ full key unless needed for debugging; log its fingerprint instead. An
 unattended initializer should support an independently supplied
 expected fingerprint.
 
-Suggested exit-status contract: `0` = ready/success, `1` =
-prerequisites missing or reconciliation failed, `2` = invalid
-invocation or configuration. Refine error categories as the
-implementation matures.
+Exit-status contract: `0` = ready/success, `1` = prerequisites missing
+or reconciliation failed, `2` = invalid invocation or configuration.
+The dividing line between `1` and `2` is whether repeating the run
+could help: `2` means the service's own inputs are wrong and a retry
+fails identically until a human intervenes, while `1` means the
+managed host state is wrong and a later boot may resolve it.
 
 ## Implementation strategy
 
@@ -107,6 +109,7 @@ bsd-ansible-bootstrap/
 ├── OpenBSD/
 │   ├── README.md
 │   ├── install.sh
+│   ├── controller-test.sh
 │   └── ansible-bootstrap
 └── FreeBSD/
     ├── README.md
@@ -115,6 +118,10 @@ bsd-ansible-bootstrap/
     └── rc.d/
         └── ansible_bootstrap
 ```
+
+Only `README.md` exists under `FreeBSD/` so far; it records the
+intended adapter and the decisions that have to be made before code is
+written.
 
 The initial OpenBSD prototype may remain a single script while its
 behavior is validated; refactor only after the FreeBSD requirements
@@ -176,6 +183,12 @@ installation is necessary, use the platform package manager, verify
 the installed interpreter, and report its absolute path for inventory
 configuration. Avoid unbounded upgrades or package churn on every
 boot.
+
+That constraint runs in both directions. A target OS packages only the
+interpreters it packages, and if the newest of those is outside the
+controller's `ansible-core` range, no configuration on the target can
+reconcile them — the controller has to move. Check what the target
+release actually offers before assuming a given `ansible-core` will do.
 
 ## Validation plan
 
