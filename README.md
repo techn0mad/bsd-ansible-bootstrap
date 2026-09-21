@@ -106,26 +106,46 @@ A possible repository layout:
 ```text
 bsd-ansible-bootstrap/
 ├── README.md
+├── lib/
+│   ├── ansible-bootstrap        # shared engine
+│   └── adapter-contract.md
 ├── OpenBSD/
 │   ├── README.md
+│   ├── adapter.sh
 │   ├── install.sh
-│   ├── controller-test.sh
-│   └── ansible-bootstrap
+│   └── controller-test.sh
 └── FreeBSD/
     ├── README.md
+    ├── adapter.sh
     ├── install.sh
-    ├── ansible-bootstrap
     └── rc.d/
         └── ansible_bootstrap
 ```
+
+The engine is platform-independent and each OS supplies an adapter of
+roughly eighty lines covering account creation, package installation,
+privilege escalation, and service management.
+[`lib/adapter-contract.md`](lib/adapter-contract.md) defines what an
+adapter must provide, and where the line between mechanism and policy
+falls: *how* to list available packages is a platform mechanism, while
+*which* Python versions are acceptable is Ansible policy and stays in
+the engine.
+
+The engine sources its adapter as root, so an adapter is code with full
+privilege rather than configuration. It is verified to be a
+root-owned, mode-0700 regular file before being read — the same rule
+this document states about not sourcing untrusted configuration as
+shell code.
 
 Only `README.md` exists under `FreeBSD/` so far; it records the
 intended adapter and the decisions that have to be made before code is
 written.
 
-The initial OpenBSD prototype may remain a single script while its
-behavior is validated; refactor only after the FreeBSD requirements
-are concrete.
+The OpenBSD prototype was a single script until its behaviour had been
+validated on hardware and the FreeBSD requirements were written down.
+Both conditions being met is what made the split above safe to attempt:
+the engine could be verified against a real host after the refactor
+rather than merely re-read.
 
 ### Boot integration
 

@@ -20,6 +20,12 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
 export PATH
 
 ENGINE=/usr/local/libexec/ansible-bootstrap
+ADAPTER=/usr/local/libexec/ansible-bootstrap-adapter
+
+# The engine is shared between platforms and lives above this
+# directory; the adapter beside this script is the OpenBSD half.
+ENGINE_SRC=../lib/ansible-bootstrap
+ADAPTER_SRC=./adapter.sh
 BOOT_FILE=/etc/rc.local
 LOG_FILE=/var/log/ansible-bootstrap.log
 MARKER='# BEGIN ansible-bootstrap'
@@ -108,7 +114,7 @@ done
 [ "$(uname -s)" = OpenBSD ] ||
     die_config "This installer requires OpenBSD"
 
-[ -f ./ansible-bootstrap ] ||
+[ -f "$ENGINE_SRC" ] && [ -f "$ADAPTER_SRC" ] ||
     die_config "Run this installer from the OpenBSD directory of the repo/archive"
 
 # Ask for anything not already in the environment, so the interactive
@@ -163,11 +169,14 @@ fi
 
 export ANSIBLE_PUBLIC_KEY ANSIBLE_EXPECTED_FINGERPRINT
 
-# Install the engine.
+# Install the engine and its adapter. The adapter is sourced by the
+# engine as root, so it is code with full privilege and gets exactly
+# the same ownership and mode; the engine refuses to load one that does
+# not.
 install -d -m 0755 /usr/local/libexec
 
-install -o root -g wheel -m 0700 \
-    ./ansible-bootstrap "$ENGINE"
+install -o root -g wheel -m 0700 "$ENGINE_SRC" "$ENGINE"
+install -o root -g wheel -m 0700 "$ADAPTER_SRC" "$ADAPTER"
 
 # Initialize the key and provision the host.
 "$ENGINE" init

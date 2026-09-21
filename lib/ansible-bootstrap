@@ -1,6 +1,12 @@
 #!/bin/sh
 #
-# ansible-bootstrap — OpenBSD implementation, v0.2
+# ansible-bootstrap — shared reconciliation engine
+#
+# Platform-independent. Everything that differs between operating
+# systems — account creation, package installation, privilege
+# escalation, service management — lives behind the small set of
+# adapter_* functions and constants documented in adapter-contract.md,
+# supplied by the OS adapter sourced below.
 #
 # init:
 #   ANSIBLE_PUBLIC_KEY='ssh-ed25519 ...' \
@@ -22,12 +28,16 @@ export PATH
 
 ACCOUNT=ansible
 HOME_DIR=/home/ansible
-LOGIN_SHELL=/bin/ksh
 
 CONFIG_DIR=/etc/ansible-bootstrap
 KEY_FILE=$CONFIG_DIR/controller.pub
 
-DOAS_CONF=/etc/doas.conf
+# The OS adapter. Sourced as root, so it is code, not configuration:
+# its ownership and permissions are verified before it is read, for the
+# same reason the repository README forbids sourcing an untrusted
+# configuration file.
+ADAPTER=/usr/local/libexec/ansible-bootstrap-adapter
+
 DOAS_BEGIN='# BEGIN ansible-bootstrap'
 DOAS_END='# END ansible-bootstrap'
 
@@ -38,22 +48,19 @@ DOAS_LEGACY='# Managed by ansible-bootstrap'
 # Managed-node interpreter requirements of the ansible-core release
 # the controller runs. Set here for ansible-core 2.21, which supports
 # managed nodes on Python 3.9 through 3.14. Re-derive these from the
-# support matrix when the controller's ansible-core changes; they are
-# not universal OpenBSD or Ansible policy. PYTHON_MAX may be empty,
-# meaning no upper bound, but every released ansible-core has one.
+# support matrix when the controller's ansible-core changes; this is
+# Ansible policy and so belongs to the engine, not to an adapter.
+# PYTHON_MAX may be empty, meaning no upper bound, but every released
+# ansible-core has one.
 PYTHON_MIN=3.9
 PYTHON_MAX=3.14
 
-# Package stem of the interpreter. The exact version to install is
-# chosen from what the repository actually offers, so no release-
-# specific version is hardcoded here.
-PYTHON_PACKAGE_STEM=python
-
-# Where OpenBSD packages install interpreters.
+# Where packages install interpreters. The same on both BSDs; an
+# adapter may reassign it.
 PYTHON_DIR=/usr/local/bin
 
-# Wall-clock bound in seconds on a package operation. rc.local is a
-# startup script, not a supervised service manager: an unreachable
+# Wall-clock bound in seconds on a package operation. The boot hook is
+# a startup task, not a supervised service manager: an unreachable
 # mirror must fail and return control to the boot sequence rather than
 # stall it indefinitely.
 PKG_TIMEOUT=300
@@ -142,6 +149,26 @@ owner_writable_only()
         ?????w????) return 1 ;;
         ????????w?) return 1 ;;
     esac
+}
+
+# Load the OS adapter. It is sourced, so it executes as root with all
+# the privilege this program has; treat it exactly as strictly as the
+# stored key. Verifying it here, rather than trusting the path, is the
+# same rule the repository README states about not sourcing untrusted
+# configuration as shell code.
+#
+# This has to come after the path helpers above and before any
+# adapter_* call below. Shell functions resolve at call time, so an
+# adapter may freely call engine functions defined further down.
+load_adapter()
+{
+    [ ! -L "$ADAPTER" ] ||
+        die_config "Refusing symlinked adapter: $ADAPTER"
+
+    expect_path "$ADAPTER" "-rwx------ 0 0" ||
+        die_config "$ADAPTER must exist, owned by root:wheel, mode 0700"
+
+    . "$ADAPTER"
 }
 
 # Run a command under a wall-clock bound, returning its own exit
@@ -356,11 +383,7 @@ apply_account()
 {
     if ! id "$ACCOUNT" >/dev/null 2>&1; then
         changed "Creating $ACCOUNT account"
-
-        # No usable password; SSH public-key authentication is
-        # configured separately.
-        useradd -m -d "$HOME_DIR" -s "$LOGIN_SHELL" \
-            -p '*' "$ACCOUNT"
+        adapter_create_account
     fi
 
     # The home directory belongs to the administrator, not to this
@@ -514,7 +537,7 @@ check_doas()
     [ -f "$DOAS_CONF" ] || return 1
 
     result=$(su "$ACCOUNT" -c \
-        '/usr/bin/doas -n /usr/bin/id -u' 2>/dev/null) ||
+        "$DOAS_BIN -n /usr/bin/id -u" 2>/dev/null) ||
         return 1
 
     [ "$result" = 0 ]
@@ -551,6 +574,12 @@ administrator_doas_rule()
 apply_doas()
 {
     check_doas && return 0
+
+    # doas is in the base system on OpenBSD but a package on FreeBSD,
+    # so on some platforms escalation cannot be configured until the
+    # package manager has worked. That inverts part of the ordering
+    # this function can otherwise assume.
+    adapter_escalation_prepare
 
     # The rule is already installed but is not effective. Appending
     # another copy would not change the outcome and would grow
@@ -593,7 +622,7 @@ apply_doas()
     chmod 0600 "$doas_tmp"
     chown root:wheel "$doas_tmp"
 
-    if ! doas -C "$doas_tmp" >/dev/null 2>&1; then
+    if ! "$DOAS_BIN" -C "$doas_tmp" >/dev/null 2>&1; then
         rm -f "$doas_tmp"
         die "Generated doas configuration is invalid"
     fi
@@ -609,13 +638,8 @@ apply_doas()
 check_sshd()
 {
     /usr/sbin/sshd -t >/dev/null 2>&1 || return 1
-    # `rcctl get <svc> status` exits 0 when the service is enabled for
-    # boot and 1 when it is not. Do NOT substitute `rcctl ls on`: it
-    # enumerates every service in /etc/rc.d, measured at 22s on an
-    # OpenBSD 7.9 guest, and was single-handedly responsible for a
-    # 24-second check and a 68-second apply.
-    rcctl get sshd status >/dev/null 2>&1 || return 1
-    rcctl check sshd >/dev/null 2>&1
+    adapter_service_enabled sshd || return 1
+    adapter_service_running sshd
 }
 
 apply_sshd()
@@ -627,18 +651,14 @@ apply_sshd()
     /usr/sbin/sshd -t ||
         die "Existing sshd configuration is invalid"
 
-    # rcctl writes the daemon name to stdout with no trailing newline,
-    # the way /etc/rc builds its "starting daemons:" line. In a log that
-    # runs into whatever is printed next, so discard it; failures still
-    # arrive on stderr, and the change is already recorded above.
-    if ! rcctl get sshd status >/dev/null 2>&1; then
+    if ! adapter_service_enabled sshd; then
         changed "Enabling sshd"
-        rcctl enable sshd >/dev/null
+        adapter_service_enable sshd
     fi
 
-    if ! rcctl check sshd >/dev/null 2>&1; then
+    if ! adapter_service_running sshd; then
         changed "Starting sshd"
-        rcctl start sshd >/dev/null
+        adapter_service_start sshd
     fi
 
     check_sshd || die "sshd is not ready"
@@ -698,38 +718,32 @@ check_python()
     find_python >/dev/null
 }
 
-# Print the fully qualified name of the newest available package whose
-# stem is exactly the interpreter and whose version satisfies the
-# configured range, or return 1 if the repository offers none.
+# Print the name of the newest package the adapter offers whose version
+# satisfies the configured range, or return non-zero if there is none.
 #
-# Two traps here. pkg_info -Q matches substrings, so asking for
-# "python" also returns unrelated packages (bpython, py3-GitPython),
-# subpackages (python-tkinter-3.13.13), and debug packages
-# (debug-python-3.13.13); requiring the stem at the start of the line
-# followed immediately by a digit selects only the interpreter itself.
-# And an unqualified stem is ambiguous — `pkg_add python` prompts to
-# choose between 2.7 and 3.x — so the exact name is what gets
-# installed, which removes the prompt rather than relying on pkg_add's
-# behaviour when its stdin is closed.
+# The adapter supplies one line per installable interpreter, as
+# "<package-name> <major> <minor>". The split is deliberate: package
+# naming differs sharply between platforms — OpenBSD's
+# python-3.13.13 against FreeBSD's python311 — while *which* versions
+# are acceptable is Ansible policy and belongs to the engine.
+#
 # Returns 2 if the repository could not be queried at all and 1 if it
 # was queried but offers nothing suitable. Those are different faults
 # and get different diagnostics.
 find_python_package()
 {
-    available=$(run_bounded "$PKG_TIMEOUT" \
-        pkg_info -Q "$PYTHON_PACKAGE_STEM") || return 2
+    available=$(adapter_python_packages) || return 2
 
     # Empty output means the query did not really work: any reachable
-    # repository returns many packages matching the stem as a
-    # substring. Do not rely on the exit status alone to notice —
-    # pkg_add is known to report a package it cannot find as a warning
-    # and still exit zero, and pkg_info may do the same. Reporting
-    # this as "nothing suitable" would point at the wrong fix.
+    # repository offers interpreters. Do not rely on the exit status
+    # alone to notice — OpenBSD's pkg_add reports a package it cannot
+    # find as a warning and still exits zero, so a query tool may do
+    # the same. Reporting this as "nothing suitable" would point at the
+    # wrong fix.
     [ -n "$available" ] || return 2
 
     printf '%s\n' "$available" |
-        awk -v stem="$PYTHON_PACKAGE_STEM" \
-            -v min="$PYTHON_MIN" -v max="$PYTHON_MAX" '
+        awk -v min="$PYTHON_MIN" -v max="$PYTHON_MAX" '
         function cmp(amaj, aminr, bmaj, bminr, bn) {
             if (amaj != bmaj) return (amaj < bmaj) ? -1 : 1
             # A bound naming only a major version constrains only it.
@@ -741,12 +755,9 @@ find_python_package()
             minn = split(min, mp, ".")
             if (max != "") maxn = split(max, xp, ".")
         }
-        $0 ~ "^" stem "-[0-9]" {
-            v = substr($0, length(stem) + 2)
-            sub(/p[0-9]+$/, "", v)
-            n = split(v, part, ".")
-            maj = part[1] + 0
-            minr = (n >= 2) ? part[2] + 0 : 0
+        NF == 3 {
+            maj = $2 + 0
+            minr = $3 + 0
 
             if (cmp(maj, minr, mp[1] + 0, mp[2] + 0, minn) < 0) next
             if (max != "" && cmp(maj, minr, xp[1] + 0, xp[2] + 0, maxn) > 0) next
@@ -754,7 +765,7 @@ find_python_package()
             if (best == "" || maj > bmaj || (maj == bmaj && minr > bminr)) {
                 bmaj = maj
                 bminr = minr
-                best = $0
+                best = $1
             }
         }
         END { if (best == "") exit 1; print best }
@@ -778,7 +789,7 @@ apply_python()
             log "Could not query the package repository within ${PKG_TIMEOUT}s."
             log "Check network reachability and PKG_PATH."
         else
-            log "The repository offers no $PYTHON_PACKAGE_STEM package within the"
+            log "The repository offers no Python interpreter within the"
             log "configured range (minimum $PYTHON_MIN${PYTHON_MAX:+, maximum $PYTHON_MAX})."
             log "Confirm that range against the ansible-core release in use."
         fi
@@ -789,11 +800,12 @@ apply_python()
 
     changed "Installing $package"
 
-    # pkg_add's exit status is not a trustworthy install-succeeded
-    # signal: it reports a package it cannot find as a warning. Log a
-    # failure, but let the verification below be the gate.
-    if ! run_bounded "$PKG_TIMEOUT" pkg_add "$package"; then
-        log "pkg_add reported failure or exceeded ${PKG_TIMEOUT}s"
+    # A package tool's exit status is not a trustworthy
+    # install-succeeded signal: OpenBSD's pkg_add reports a package it
+    # cannot find as a warning and still exits zero. Log a failure, but
+    # let the verification below be the gate.
+    if ! adapter_package_install "$package"; then
+        log "Package installation reported failure or exceeded ${PKG_TIMEOUT}s"
     fi
 
     python_path=$(find_python) ||
@@ -857,6 +869,7 @@ apply_all()
 }
 
 require_root
+load_adapter
 
 case "${1:-}" in
     init)
