@@ -14,14 +14,13 @@ Ansible.
 > via `community.general.doas` reaching root, and fact gathering
 > reporting the interpreter this service installed.
 >
-> Reboots have since exercised the `rc.local` hook in both states. On a
-> healthy host `apply` repaired nothing and reached no network, because
-> discovery found the installed interpreter. On a host with `sshd`
-> deliberately disabled, the boot-time `apply` re-enabled and restarted
-> it unattended — the first repair to run without a person present.
+> Reboots have since exercised the `rc.local` hook against a healthy
+> host and against each form of drift the contract covers. `sshd`
+> disabled, the interpreter removed, and `authorized_keys` emptied were
+> each repaired unattended at boot, changing only what was broken. On a
+> healthy host `apply` repairs nothing and reaches no network at all.
 >
-> Not yet exercised: the other repair paths (a removed authorized key,
-> a removed interpreter), a boot with the package mirror unreachable,
+> Not yet exercised: a boot with the package mirror **unreachable**,
 > and any release other than 7.9. Treat it as a working prototype
 > rather than a tested release, and see the checklist at the end for
 > the assumptions that remain unconfirmed.
@@ -63,12 +62,26 @@ recorded on a `change:` line. A run closes by saying whether it
 changed anything:
 
 ```text
-ansible-bootstrap: --- 2026-09-20T14:23:01Z apply ---
+ansible-bootstrap: --- 2026-09-20T18:43:52Z apply ---
 ansible-bootstrap: change: Enabling sshd
 ansible-bootstrap: change: Starting sshd
 ...
 ansible-bootstrap: System is Ansible-ready; 2 changes made
+ansible-bootstrap: --- 2026-09-20T18:47:09Z apply ---
+ansible-bootstrap: No compatible Python interpreter is installed; querying packages
+ansible-bootstrap: change: Installing python-3.13.13
+quirks-7.194 signed on 2026-04-28T15:14:35Z
+ansible-bootstrap: Installed Python interpreter: /usr/local/bin/python3.13
+...
+ansible-bootstrap: System is Ansible-ready; 1 change made
 ```
+
+That is real output from two consecutive boots, each repairing a
+different fault. Package-tool output appears verbatim and unprefixed —
+the `quirks` line above — and is deliberately not suppressed: when a
+network package operation fails in an unexpected way, that output is the
+diagnostic. `rcctl`'s is suppressed instead, because it emits a bare
+daemon name with no trailing newline and runs into the following line.
 
 `grep 'change:' /var/log/ansible-bootstrap.log` is then the full
 history of what this service has done to the host. On a boot hook that
@@ -681,13 +694,12 @@ OpenBSD 7.9 (see **Status** above). What follows is what that single
 run did *not* establish. Before calling this directory
 production-ready, work through at least the following:
 
-- Exercise the remaining repair paths against a diverged host. A
-  disabled `sshd` has been repaired unattended at boot; removing the
-  managed authorized key, and removing the interpreter, have not been
-  tried.
-- Boot a host with the package mirror unreachable. `PKG_TIMEOUT` and
-  the bounded-command machinery have never engaged during a real boot,
-  because a healthy host never queries the repository.
+- Boot a host with the package mirror **unreachable**. A boot with a
+  reachable mirror has installed an interpreter successfully, so
+  `run_bounded` has now run for real, but the timeout and the
+  cannot-query diagnostic have only ever been exercised against
+  stubs — and that is the path whose whole purpose is not stalling
+  boot.
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
