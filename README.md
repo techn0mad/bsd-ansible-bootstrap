@@ -5,10 +5,13 @@ host **ready to be provisioned by Ansible**. The service runs at boot,
 reconciles only the prerequisites for Ansible access and execution,
 and exits. It is not a resident daemon or a replacement for Ansible.
 
-> **Project status:** Design and early OpenBSD prototype. The current
-> script is not production-hardened; verify platform-specific commands
-> and test in a disposable VM before enabling it at boot. FreeBSD
-> support is planned.
+> **Project status:** The OpenBSD implementation is validated on a 7.9
+> guest — all five invariants, drift repaired unattended at boot, and a
+> controller-side Ansible run — but is still a prototype rather than a
+> tested release; see [OpenBSD/README.md](OpenBSD/README.md) for what
+> remains unconfirmed. The FreeBSD implementation is written against
+> probed 15.1 behaviour and **has not yet run on a host**. Test in a
+> disposable VM before enabling either at boot.
 
 ## Goals
 
@@ -101,7 +104,7 @@ escalation, service management, and interpreter discovery behind small
 OS-specific functions. Avoid a large abstraction framework for two
 operating systems.
 
-A possible repository layout:
+The repository layout:
 
 ```text
 bsd-ansible-bootstrap/
@@ -109,13 +112,13 @@ bsd-ansible-bootstrap/
 ├── lib/
 │   ├── ansible-bootstrap        # shared engine
 │   ├── install.sh               # shared installer
+│   ├── controller-test.sh       # shared controller-side tests
 │   └── adapter-contract.md
 ├── OpenBSD/
 │   ├── README.md
 │   ├── adapter.sh               # engine adapter, deployed
 │   ├── boot-hook.sh             # installer adapter, not deployed
-│   ├── install.sh               # wrapper
-│   └── controller-test.sh
+│   └── install.sh               # wrapper
 └── FreeBSD/
     ├── README.md
     ├── adapter.sh
@@ -143,10 +146,6 @@ privilege rather than configuration. It is verified to be a
 root-owned, mode-0700 regular file before being read — the same rule
 this document states about not sourcing untrusted configuration as
 shell code.
-
-Only `README.md` exists under `FreeBSD/` so far; it records the
-intended adapter and the decisions that have to be made before code is
-written.
 
 The OpenBSD prototype was a single script until its behaviour had been
 validated on hardware and the FreeBSD requirements were written down.
@@ -216,6 +215,71 @@ interpreters it packages, and if the newest of those is outside the
 controller's `ansible-core` range, no configuration on the target can
 reconcile them — the controller has to move. Check what the target
 release actually offers before assuming a given `ansible-core` will do.
+
+## Controller-side tests
+
+`lib/controller-test.sh` runs the checks the engine cannot perform on
+itself. It is executed **from the Ansible controller**, against a host
+that has already been provisioned, and is shared between platforms —
+nothing in it is OS-specific, and the become method and interpreter path
+are options rather than constants.
+
+```sh
+lib/controller-test.sh 192.168.1.87
+```
+
+The sample below is from the OpenBSD guest; the shape is the same for
+any target.
+
+```text
+preflight
+  ok    ansible runs (ansible [core 2.21.4])
+  ok    become plugin available: community.general.doas
+
+ssh
+  ok    key-only login as ansible
+  ok    authorized_keys contains this key (SHA256:aWo3...)
+  ok    doas -n id -u returns 0
+
+ansible
+  ok    ping module
+  ok    fact gathering
+        ansible_distribution = OpenBSD
+        ansible_python_version = 3.13.13
+        interpreter   = /usr/local/bin/python3.13
+  ok    become via community.general.doas reaches root
+
+8 passed, 0 failed
+```
+
+Options: `-u` account, `-i` identity, `-p` to force an interpreter
+path rather than letting Ansible discover one, `-m` become method, `-t`
+connect timeout. It exits non-zero if any check fails.
+
+Why these checks and not others — each one asserts something the
+engine's own `check` cannot:
+
+- The engine can confirm a key is in `authorized_keys`; only a real
+  login proves `sshd` will accept it. `IdentitiesOnly=yes` is set so a
+  loaded agent cannot quietly offer a different key and make a broken
+  `authorized_keys` look fine, and `BatchMode=yes` so an unknown host
+  key fails instead of prompting.
+- Comparing the fingerprint in `authorized_keys` against the
+  controller's own key proves the target trusts *this* key and not
+  merely some key — which catches a rotated or replaced controller key
+  that would otherwise surface much later as a mystifying auth failure.
+- The engine tests `doas` through `su`; Ansible reaches it over SSH
+  through a become plugin. Those are different paths and both can fail
+  independently.
+- Fact gathering exercises the interpreter far harder than `ping`, and
+  reports the path Ansible actually chose — the value that belongs in
+  inventory.
+
+`-a` additionally runs `apply` on the target twice and asserts the
+second run reports no changes, which is the idempotency property the
+whole design rests on. It is not the default because, unlike everything
+else here, it modifies the host. It requires an engine recent enough to
+report change counts.
 
 ## Validation plan
 

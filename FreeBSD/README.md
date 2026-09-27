@@ -1,30 +1,30 @@
 # FreeBSD implementation — Ansible bootstrap service
 
-> **Status: planned. Nothing in this directory is implemented yet.**
-> This document records the intended FreeBSD adapter and the decisions
-> that have to be made before code is written. The
-> [OpenBSD implementation](../OpenBSD/README.md) is the working
+> **Status: written, not yet run on a host.** The adapter, boot hook and
+> rc.d service are implemented against behaviour probed on a
+> 15.1-RELEASE arm64 guest — see *Confirmed on 15.1-RELEASE* below — and
+> the shared engine, installer and controller-side tests are the same
+> code the OpenBSD implementation runs. But nothing here has installed
+> or reconciled anything yet. The
+> [OpenBSD implementation](../OpenBSD/README.md) is the validated
 > reference; the repository-wide [README](../README.md) defines the
 > contract both platforms must satisfy.
 
-## What this will contain
-
-Per the layout in the repository README:
+## What this contains
 
 ```text
 FreeBSD/
 ├── README.md
-├── install.sh
-├── ansible-bootstrap
+├── adapter.sh       # engine adapter: accounts, packages, services, doas paths
+├── boot-hook.sh     # installer adapter: the rc.d script and rc.conf variable
+├── install.sh       # wrapper over lib/install.sh
 └── rc.d/
     └── ansible_bootstrap
 ```
 
-The OpenBSD prototype deliberately remains a single script while its
-behavior is validated. Splitting a shared POSIX-shell engine from the
-OS adapters should wait until the FreeBSD requirements below are
-concrete — that is the point at which the real abstraction boundaries
-become visible rather than guessed.
+The engine, the installer and the controller-side tests are shared with
+OpenBSD under `lib/`. These four files are the whole FreeBSD-specific
+surface.
 
 ## Readiness contract on FreeBSD
 
@@ -73,11 +73,9 @@ configured**: `PYTHON_MAX=3.14` selects `python314` and leaves
 a sharper argument for setting one than OpenBSD could offer, where 3.13
 was the only version available.
 
-## Decisions that must be made first
+## Where FreeBSD is not a renamed OpenBSD
 
-These are the places where FreeBSD is not merely a renamed OpenBSD,
-and each one needs confirming on a real target release rather than
-assuming the OpenBSD answer transfers.
+The differences that shaped the adapter, and how each is handled.
 
 **Privilege escalation is not in the base system.** This is the
 substantive difference. On OpenBSD, `doas` is always present, so the
@@ -86,9 +84,17 @@ package manager. On FreeBSD, both `doas` and `sudo` are packages, so
 privilege escalation *depends on* a working package manager and a
 reachable repository. That inverts part of the ordering and means a
 mirror failure can block a prerequisite that is unconditionally
-available on OpenBSD. Decide which tool to standardize on, and decide
-what `check` should report on a host where the package is missing and
-the repository is unreachable.
+available on OpenBSD.
+
+**Standardized on `doas`**, so the shared engine's `doas.conf` handling
+— the marked block, the refusal to duplicate its own rule, the refusal
+to outrank an administrator's — carries over unchanged, with only
+`DOAS_BIN` and `DOAS_CONF` differing. `adapter_escalation_prepare`
+installs it, bootstrapping `pkg` first if that stub has never run, and
+both operations are bounded. On a host where the repository is
+unreachable, `check` reports `doas: NOT READY` and `apply` fails with
+the bounded-package diagnostic; there is no way to do better, because
+the capability genuinely is not present.
 
 **`pkg` may need bootstrapping.** A minimal FreeBSD installation may
 have no `pkg` binary until `pkg bootstrap` runs, which is itself a
@@ -96,13 +102,23 @@ network operation. The existing bounded-package-operation helper
 (`run_bounded`) should cover this too, and the same actionable
 diagnostic applies.
 
-**Boot integration is a real rc.d service, not `rc.local`.** FreeBSD
-has `rc.local`, but the documented mechanism is an `rc.d` script with
-`sysrc ansible_bootstrap_enable=YES`. It still must be a short-lived
-boot task, not a daemon: `PROVIDE`, `REQUIRE: NETWORKING`, a
-one-shot command, and no dependency loop that can delay or block
-multi-user boot. `rc.d` gives better ordering control than `rc.local`,
-which is a genuine improvement over the OpenBSD arrangement.
+**Boot integration is a real rc.d service.** Not a choice, as it turned
+out: `/etc/rc` on 15.1 contains no reference to `rc.local` at all, so
+the OpenBSD approach is unavailable rather than merely inferior.
+[`rc.d/ansible_bootstrap`](rc.d/ansible_bootstrap) is `REQUIRE:
+NETWORKING` because it may need the package repository, and deliberately
+not ordered before `LOGIN`, so a failure cannot keep the machine from
+becoming usable. It returns 0 even when reconciliation fails — the
+failure is announced on the console and recorded in the log, and a later
+boot retries, which is not worth risking the rest of the boot sequence
+over. Its `status` command reports readiness rather than whether
+something is running, because nothing is.
+
+This is the easier half of the platform split, which is unusual for
+FreeBSD here: the script is a whole file this service owns, so
+installing it is idempotent by nature. OpenBSD has to locate its own
+block inside the administrator's `rc.local`, replace it, preserve
+unrelated content and leave ownership and mode alone.
 
 **Getting the files onto the host.** The OpenBSD README fetches an
 archive with base `ftp(1)`; FreeBSD has no `ftp` for this and uses
@@ -140,9 +156,9 @@ already reads uid and gid from the `passwd` entry rather than assuming
 a group named after the account, which should carry over unchanged,
 but confirm it.
 
-## What should be shared, not reimplemented
+## What is shared, not reimplemented
 
-Most of the engine is not OS-specific and should not be forked:
+Most of the engine is not OS-specific and is not forked:
 
 - public-key validation, fingerprint reporting, and the refusal to
   replace a configured controller key
@@ -151,9 +167,8 @@ Most of the engine is not OS-specific and should not be forked:
 - the permission and ownership predicates
 - the bounded-command helper
 - the exit-status contract and the check/apply/report structure
-- `controller-test.sh`, which is almost entirely platform-independent:
-  only the become method and the interpreter path differ, and both are
-  already options rather than constants
+- `controller-test.sh`, which turned out to be entirely
+  platform-independent and now lives in `lib/`
 
 The genuinely platform-specific surface is small: account creation,
 package installation, privilege-escalation configuration, service
