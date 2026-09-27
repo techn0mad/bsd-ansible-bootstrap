@@ -32,8 +32,10 @@
 > ```
 >
 > All eight adapter functions have run on hardware. `adapter_service_start`
-> only ever ran because of that bug, and will not again now it is fixed —
-> exercising it deliberately needs `sshd` stopped, and so console access.
+> was then exercised deliberately, by stopping `sshd` while leaving it
+> enabled: `apply` logged one change, `Starting sshd` and not `Enabling
+> sshd`, which is what distinguishes a working `adapter_service_enabled`
+> from a broken one.
 >
 > Still unexercised: drift repair at boot rather than by hand, and a boot
 > with the package repository unreachable. The repository-wide
