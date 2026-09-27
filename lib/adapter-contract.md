@@ -101,6 +101,11 @@ Bound the query with `run_bounded "$PKG_TIMEOUT"`, and capture its
 output before filtering — piping it into `awk` would replace its exit
 status with `awk`'s and hide a timeout.
 
+Discard stdout where the tool is chatty, but **leave stderr alone**:
+`run_bounded` reports a timeout there, and redirecting both hides the one
+diagnostic that distinguishes a bound that fired from a command that
+failed quickly.
+
 ### `adapter_package_install NAME`
 
 Install exactly the named package. The engine passes a fully qualified

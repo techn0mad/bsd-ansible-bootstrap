@@ -171,25 +171,55 @@ load_adapter()
     . "$ADAPTER"
 }
 
-# Run a command under a wall-clock bound, returning its own exit
-# status, or 124 if it had to be killed. Implemented with a poll loop
-# rather than timeout(1) so there is no dependency to confirm on the
-# target release. stdin is closed: a package tool that decides to ask
-# a question must fail rather than wait at boot for an answer that
-# will never come.
+# Signal a process and everything beneath it, deepest first.
+#
+# Depth first, and children before their parent, because once a parent
+# dies its children are reparented to init and can no longer be found by
+# walking down from it. Killing top-down leaves exactly the orphans this
+# is here to prevent.
+kill_tree()
+{
+    for bounded_child in $(pgrep -P "$1" 2>/dev/null); do
+        kill_tree "$bounded_child" "$2"
+    done
+
+    kill -"$2" "$1" 2>/dev/null || :
+}
+
+# Run a command under a wall-clock bound, returning its own exit status,
+# or 124 if it had to be killed. A poll loop rather than timeout(1), so
+# there is no dependency to confirm on the target release. stdin is
+# closed: a package tool that decides to ask a question must fail rather
+# than wait at boot for an answer that will never come.
+#
+# Two things here were learned the hard way, by hanging a FreeBSD guest
+# for 617 seconds under a 15-second bound.
+#
+# The command's stdout goes to a file, never to the descriptor this
+# function was called with. A command substitution's pipe stays open
+# until every process holding its write end exits — so one surviving
+# grandchild keeps the *caller* blocked for as long as it runs, however
+# promptly this function returns. Writing to a file removes the
+# dependency instead of racing it.
+#
+# And the tree is walked to find what to kill. `set -m` was tried first,
+# on the theory that job control would put the command in its own process
+# group: FreeBSD's sh leaves a background job in the caller's group, so
+# the group kill either finds no such group or would take this engine
+# down with it. Checking that `wait` preserves a status under `set -m`,
+# which it does, says nothing about whether a process group was created.
 run_bounded()
 {
     limit=$1
     shift
 
-    # Job control puts the command in its own process group, so the
-    # whole group can be signalled. Killing only the direct child
-    # would leave pkg_add's fetch process running and holding the
-    # descriptors it inherited.
-    set -m
-    "$@" < /dev/null &
+    bounded_out=$(mktemp /var/run/ansible-bootstrap.XXXXXXXX) || {
+        log "Cannot create temporary output file for: $*"
+        return 1
+    }
+
+    "$@" < /dev/null > "$bounded_out" &
     bounded_pid=$!
-    set +m
 
     waited=0
     while [ "$waited" -lt "$limit" ]; do
@@ -198,28 +228,25 @@ run_bounded()
         waited=$((waited + 1))
     done
 
+    bounded_status=0
+
     if kill -0 "$bounded_pid" 2>/dev/null; then
         log "Exceeded ${limit}s; terminating: $*"
 
-        # Fall back to the single process if this shell did not make
-        # the job a group leader.
-        signal_bounded TERM
+        kill_tree "$bounded_pid" TERM
         sleep 2
-        signal_bounded KILL
+        kill_tree "$bounded_pid" KILL
 
         wait "$bounded_pid" 2>/dev/null
-
-        return 124
+        bounded_status=124
+    else
+        wait "$bounded_pid" || bounded_status=$?
     fi
 
-    wait "$bounded_pid"
-}
+    cat "$bounded_out"
+    rm -f "$bounded_out"
 
-signal_bounded()
-{
-    kill "-$1" "-$bounded_pid" 2>/dev/null ||
-        kill "-$1" "$bounded_pid" 2>/dev/null ||
-        return 0
+    return "$bounded_status"
 }
 
 # Compare SSH key type and base64 material, ignoring comments.

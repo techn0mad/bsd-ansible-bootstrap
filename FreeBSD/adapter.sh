@@ -108,7 +108,11 @@ adapter_python_packages()
     # has expired, would otherwise look like a repository offering no
     # interpreters. This only runs when an install is actually needed,
     # so it is not per-boot churn.
-    run_bounded "$PKG_TIMEOUT" pkg update >/dev/null 2>&1 || :
+    # stdout discarded, stderr left alone: pkg's catalogue chatter is
+    # noise, but run_bounded reports a timeout on stderr and that must
+    # reach the log. Redirecting both hid exactly the diagnostic this
+    # needed when the bound was found to be broken.
+    run_bounded "$PKG_TIMEOUT" pkg update >/dev/null || :
 
     # Captured before filtering rather than piped: a pipeline's status
     # is the last command's, which would discard a timeout and report
