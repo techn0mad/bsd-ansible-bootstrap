@@ -20,6 +20,15 @@ Ansible.
 > each repaired unattended at boot, changing only what was broken. On a
 > healthy host `apply` repairs nothing and reaches no network at all.
 >
+> Re-validated after the engine was split from
+> [this adapter](adapter.sh): reinstalled on the same guest,
+> `controller-test.sh -a` passed 10/10, and the repair paths that run
+> through the adapter were re-exercised — a disabled `sshd` re-enabled,
+> and a removed interpreter re-queried, re-selected and reinstalled.
+> `adapter_create_account` and `adapter_service_start` remain
+> unexercised, since the account already existed and the daemon was
+> never stopped.
+>
 > Not yet exercised: a boot with the package mirror **unreachable**,
 > and any release other than 7.9. Treat it as a working prototype
 > rather than a tested release, and see the checklist at the end for
