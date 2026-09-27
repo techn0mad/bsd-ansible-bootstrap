@@ -1,14 +1,24 @@
 # FreeBSD implementation — Ansible bootstrap service
 
-> **Status: written, not yet run on a host.** The adapter, boot hook and
-> rc.d service are implemented against behaviour probed on a
-> 15.1-RELEASE arm64 guest — see *Confirmed on 15.1-RELEASE* below — and
-> the shared engine, installer and controller-side tests are the same
-> code the OpenBSD implementation runs. But nothing here has installed
-> or reconciled anything yet. The
-> [OpenBSD implementation](../OpenBSD/README.md) is the validated
-> reference; the repository-wide [README](../README.md) defines the
-> contract both platforms must satisfy.
+> **Status:** A fresh 15.1-RELEASE arm64 guest reached all five
+> invariants on the first attempt, in eight changes: key stored, account
+> created, controller key installed, `.ssh` and `authorized_keys`
+> ownership set, `doas` installed from packages, passwordless `doas`
+> configured, and `python314` installed. The shared engine, installer and
+> controller-side tests are the same code the OpenBSD implementation
+> runs, unmodified.
+>
+> That run was the first time **anywhere** that account creation and
+> package-installed privilege escalation had executed — on OpenBSD the
+> account always already existed and `doas` is in the base system.
+>
+> Not yet exercised: the `rc.d` boot hook, since the first install
+> deliberately withheld it; `adapter_service_enable` and
+> `adapter_service_start`, since `sshd` was already enabled and running;
+> and any form of drift repair. The
+> [OpenBSD implementation](../OpenBSD/README.md) remains the more
+> thoroughly validated of the two; the repository-wide
+> [README](../README.md) defines the contract both must satisfy.
 
 ## What this contains
 
@@ -71,7 +81,9 @@ drops the meta package and requiring the name to end there drops the
 configured**: `PYTHON_MAX=3.14` selects `python314` and leaves
 `python315` alone. With no maximum it would install the beta — which is
 a sharper argument for setting one than OpenBSD could offer, where 3.13
-was the only version available.
+was the only version available. On the first real install this worked
+exactly so: `python314` was chosen and `/usr/local/bin/python3.14`
+reported to the controller.
 
 ## Where FreeBSD is not a renamed OpenBSD
 
