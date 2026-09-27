@@ -662,12 +662,12 @@ OpenBSD 7.9 (see **Status** above). What follows is what that single
 run did *not* establish. Before calling this directory
 production-ready, work through at least the following:
 
-- Boot a host with the package mirror **unreachable**. A boot with a
-  reachable mirror has installed an interpreter successfully, so
-  `run_bounded` has now run for real, but the timeout and the
-  cannot-query diagnostic have only ever been exercised against
-  stubs — and that is the path whose whole purpose is not stalling
-  boot.
+- Exercise a boot, rather than a hand-run `apply`, with the package
+  repository unreachable. The bound itself is now verified on hardware:
+  shadowing `pkg_info` with a sleeper made `apply` take 25 seconds under
+  a 15-second bound rather than the sleeper's 90, logged `Exceeded 15s;
+  terminating`, and left no orphan. What has not been seen is that
+  happening unattended during boot.
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.

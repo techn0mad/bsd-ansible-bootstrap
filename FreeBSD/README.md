@@ -44,9 +44,16 @@
 > `REQUIRE`'d service is disabled and `rc` skips it, which was the way
 > this test could have stranded the guest.
 >
-> Still unexercised: a boot with the package repository unreachable. The
-> repository-wide [README](../README.md) defines the contract both
-> platforms must satisfy.
+> The package bound has since been verified on this host, and finding
+> that it did not work is the most valuable thing this platform
+> contributed — see *Bounding package operations* below. After the fix,
+> a 15-second bound against a hung `pkg` cost 34 seconds rather than
+> 617, and left no orphaned process.
+>
+> Still unexercised: that happening unattended during boot rather than
+> from a hand-run `apply`. The repository-wide
+> [README](../README.md) defines the contract both platforms must
+> satisfy.
 
 ## What this contains
 
@@ -135,6 +142,26 @@ both operations are bounded. On a host where the repository is
 unreachable, `check` reports `doas: NOT READY` and `apply` fails with
 the bounded-package diagnostic; there is no way to do better, because
 the capability genuinely is not present.
+
+**Bounding package operations.** This platform is where the bound was
+found to be broken, and the bug was in shared code that OpenBSD had
+never stressed. Forcing a genuine hang — by shadowing `pkg` with a
+sleeper, since a misconfigured repository merely fails fast — held the
+host for 617 seconds under a 15-second bound.
+
+`ps` showed every process sharing the caller's process group: `set -m`
+does not give a background job its own group in FreeBSD's `sh`, so the
+group kill found nothing, only the direct child died, and the orphaned
+grandchild kept the caller's command-substitution pipe open for its full
+lifetime. The bound fired and logged correctly; it just did not bound
+anything.
+
+`run_bounded` now writes the command's stdout to a file rather than to
+the caller's descriptor, so no surviving process can hold a pipe the
+caller waits on, and walks the process tree with `pgrep -P` to signal
+children before parents. Verified on both platforms: 34 seconds against
+a hung `pkg` here, 25 against a hung `pkg_info` on OpenBSD, no orphans
+either side.
 
 **`pkg` may need bootstrapping.** A minimal FreeBSD installation may
 have no `pkg` binary until `pkg bootstrap` runs, which is itself a
