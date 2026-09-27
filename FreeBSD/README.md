@@ -12,13 +12,19 @@
 > package-installed privilege escalation had executed — on OpenBSD the
 > account always already existed and `doas` is in the base system.
 >
-> Not yet exercised: the `rc.d` boot hook, since the first install
-> deliberately withheld it; `adapter_service_enable` and
-> `adapter_service_start`, since `sshd` was already enabled and running;
-> and any form of drift repair. The
-> [OpenBSD implementation](../OpenBSD/README.md) remains the more
-> thoroughly validated of the two; the repository-wide
-> [README](../README.md) defines the contract both must satisfy.
+> `lib/controller-test.sh -a` then passed 10/10 against that host,
+> unmodified: key-only login, the *packaged* `doas` reached through the
+> become plugin, an Ansible ping, fact gathering reporting Python
+> 3.14.7 — the top of ansible-core 2.21's managed-node range — and a
+> second `apply` making no changes. A `sysrc sshd_enable=NO` drift test
+> was then repaired with exactly one change.
+>
+> Seven of the eight adapter functions have run on hardware. Only
+> `adapter_service_start` has not, since that needs `sshd` stopped and
+> so console access. Not yet exercised either: the `rc.d` boot hook,
+> which the first install deliberately withheld. The repository-wide
+> [README](../README.md) defines the contract both platforms must
+> satisfy.
 
 ## What this contains
 
