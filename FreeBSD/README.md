@@ -37,10 +37,16 @@
 > sshd`, which is what distinguishes a working `adapter_service_enabled`
 > from a broken one.
 >
-> Still unexercised: drift repair at boot rather than by hand, and a boot
-> with the package repository unreachable. The repository-wide
-> [README](../README.md) defines the contract both platforms must
-> satisfy.
+> Drift repair at boot has since been exercised too, by disabling `sshd`
+> and rebooting. The hook logged two changes, `Enabling sshd` then
+> `Starting sshd`, and the controller could reach the host again
+> afterwards — confirming that `rcorder` ordering holds even when a
+> `REQUIRE`'d service is disabled and `rc` skips it, which was the way
+> this test could have stranded the guest.
+>
+> Still unexercised: a boot with the package repository unreachable. The
+> repository-wide [README](../README.md) defines the contract both
+> platforms must satisfy.
 
 ## What this contains
 
