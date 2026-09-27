@@ -108,19 +108,26 @@ bsd-ansible-bootstrap/
 ├── README.md
 ├── lib/
 │   ├── ansible-bootstrap        # shared engine
+│   ├── install.sh               # shared installer
 │   └── adapter-contract.md
 ├── OpenBSD/
 │   ├── README.md
-│   ├── adapter.sh
-│   ├── install.sh
+│   ├── adapter.sh               # engine adapter, deployed
+│   ├── boot-hook.sh             # installer adapter, not deployed
+│   ├── install.sh               # wrapper
 │   └── controller-test.sh
 └── FreeBSD/
     ├── README.md
     ├── adapter.sh
+    ├── boot-hook.sh
     ├── install.sh
     └── rc.d/
         └── ansible_bootstrap
 ```
+
+Run the installer from the platform directory — `cd OpenBSD &&
+./install.sh` — which is a nineteen-line wrapper that asserts the
+platform and hands off to the shared installer.
 
 The engine is platform-independent and each OS supplies an adapter of
 roughly eighty lines covering account creation, package installation,

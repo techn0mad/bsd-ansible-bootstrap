@@ -112,3 +112,33 @@ Bound it with `run_bounded "$PKG_TIMEOUT"`. Its exit status is
 advisory — the engine re-runs interpreter discovery afterwards and
 treats that as the gate, because OpenBSD's `pkg_add` reports a package
 it cannot find as a warning and still exits zero.
+
+## The installer's separate, smaller contract
+
+`lib/install.sh` is shared too, and has its own platform half in
+`$OS/boot-hook.sh` — **not** in `adapter.sh`. Two reasons they are
+separate files:
+
+- `adapter.sh` is *deployed* to the target and sourced by the engine as
+  root. There is no reason to ship installer-only code that runs with
+  that privilege and is never called.
+- The boot-hook functions use the *installer's* `die` and `log`, whose
+  output is prefixed `install:`. In the engine's context those names
+  mean something different.
+
+A boot-hook half provides one variable and two functions:
+
+| Name | Meaning |
+| --- | --- |
+| `BOOT_HOOK_TARGET` | Where the hook goes, for messages. A path, or a short phrase where more than one thing is involved. |
+| `boot_hook_show` | Print what would be installed, for the case where the hook is withheld so it can be added by hand. |
+| `boot_hook_install` | Install or update it, and say which. Must be safe to repeat. |
+
+The two platforms differ more here than anywhere else in the project.
+OpenBSD appends a marked block to `/etc/rc.local`, a file belonging to
+the administrator, so it must locate its own block, replace it, preserve
+unrelated content, and leave ownership and mode alone. FreeBSD has no
+`rc.local` at all on 15.1 — `/etc/rc` does not reference it — so it
+installs an `rc.d` script, a whole file this service owns, and sets
+`ansible_bootstrap_enable` with `sysrc`. Overwriting a file you own is
+inherently idempotent, which makes FreeBSD the easier half.
