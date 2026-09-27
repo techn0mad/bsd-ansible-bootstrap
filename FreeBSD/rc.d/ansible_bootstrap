@@ -3,13 +3,27 @@
 # Maintain Ansible readiness at boot.
 #
 # PROVIDE: ansible_bootstrap
-# REQUIRE: NETWORKING
+# REQUIRE: NETWORKING LOGIN sshd
 # KEYWORD: nojail
 #
 # A short-lived boot task, not a daemon: it reconciles the readiness
-# prerequisites and exits. REQUIRE: NETWORKING because it may need the
-# package repository; it is deliberately not ordered before LOGIN, so a
-# failure here cannot keep the machine from becoming usable.
+# prerequisites and exits.
+#
+# The REQUIRE list is load-bearing, and NETWORKING alone was wrong:
+#
+#   NETWORKING  the package repository may be needed
+#   LOGIN       nothing here may delay the console becoming usable. A
+#               package operation can consume the whole PKG_TIMEOUT, and
+#               ordered before LOGIN that would hold up the console for
+#               minutes.
+#   sshd        FreeBSD's sshd requires LOGIN and so starts late. Run
+#               before it and the engine finds sshd enabled but not yet
+#               started, "repairs" it by starting it early, and reports
+#               a change on every boot of a host with nothing wrong.
+#
+# So this must run after the services whose state it checks have had
+# their turn. Adding a managed service to the adapter means adding it
+# here too.
 #
 # Enable with:  sysrc ansible_bootstrap_enable=YES
 

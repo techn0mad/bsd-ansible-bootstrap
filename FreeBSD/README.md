@@ -19,12 +19,14 @@
 > second `apply` making no changes. A `sysrc sshd_enable=NO` drift test
 > was then repaired with exactly one change.
 >
-> Seven of the eight adapter functions have run on hardware. Only
-> `adapter_service_start` has not, since that needs `sshd` stopped and
-> so console access. Not yet exercised either: the `rc.d` boot hook,
-> which the first install deliberately withheld. The repository-wide
-> [README](../README.md) defines the contract both platforms must
-> satisfy.
+> A reboot then exercised the `rc.d` hook — and found a bug in its
+> `rcorder` placement, described under *Boot integration* below. It also
+> exercised `adapter_service_start`, by accident and for the wrong
+> reason, which nevertheless makes **all eight** adapter functions
+> hardware-tested here. The fix needs a reboot to confirm.
+>
+> The repository-wide [README](../README.md) defines the contract both
+> platforms must satisfy.
 
 ## What this contains
 
@@ -124,9 +126,27 @@ diagnostic applies.
 out: `/etc/rc` on 15.1 contains no reference to `rc.local` at all, so
 the OpenBSD approach is unavailable rather than merely inferior.
 [`rc.d/ansible_bootstrap`](rc.d/ansible_bootstrap) is `REQUIRE:
-NETWORKING` because it may need the package repository, and deliberately
-not ordered before `LOGIN`, so a failure cannot keep the machine from
-becoming usable. It returns 0 even when reconciliation fails — the
+NETWORKING LOGIN sshd`, and every entry is load-bearing. The first
+attempt used `NETWORKING` alone and a reboot showed why that is wrong:
+
+```text
+ 81: /etc/rc.d/NETWORKING
+ 84: /usr/local/etc/rc.d/ansible_bootstrap
+162: /etc/rc.d/LOGIN
+167: /etc/rc.d/sshd
+```
+
+FreeBSD's `sshd` requires `LOGIN` and therefore starts late. Running at
+84, the engine found `sshd` enabled but not yet started, "repaired" it by
+starting it early, and reported a change on every boot of a host with
+nothing wrong. Worse, a package operation there can consume the whole
+`PKG_TIMEOUT` — which ordered before `LOGIN` would hold the console
+unusable for minutes, in direct contradiction of the repository README's
+requirement that the boot hook never prevent console access.
+
+OpenBSD never showed this because `rc.local` runs at the end of
+`/etc/rc`, after the daemons. Adding a managed service to the adapter
+means adding it to the `REQUIRE` list too. It returns 0 even when reconciliation fails — the
 failure is announced on the console and recorded in the log, and a later
 boot retries, which is not worth risking the rest of the boot sequence
 over. Its `status` command reports readiness rather than whether
