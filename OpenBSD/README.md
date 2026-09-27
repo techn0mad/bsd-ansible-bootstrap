@@ -29,9 +29,13 @@ Ansible.
 > while leaving it enabled: `check` reported `sshd: NOT READY` and
 > `apply` logged one change, `Starting sshd` and not `Enabling sshd`,
 > which is what distinguishes a working `adapter_service_enabled` from a
-> broken one. `adapter_create_account` remains unexercised here, since
-> the account has always already existed on this guest; it has run on
-> FreeBSD.
+> broken one. `adapter_create_account` has since been exercised too, by
+> deleting the account and reconciling: `check` reported `account`,
+> `authorized_key` and `doas` all NOT READY — `doas` because its check
+> runs `su ansible`, which cannot work without the account — and `apply`
+> recreated all three. The account returned with a different uid, which
+> incidentally confirmed that reading uid and gid from the `passwd` entry
+> rather than hardcoding them was the right call.
 >
 > Not yet exercised: a boot with the package mirror **unreachable**,
 > and any release other than 7.9. Treat it as a working prototype
@@ -363,7 +367,15 @@ configuration parse for proof of usable SSH or privilege escalation.
 ## OpenBSD-specific mechanisms
 
 **Account:** Use native `useradd` for initial creation and the system
-account database for inspection. The login shell is `/bin/ksh`; the
+account database for inspection.
+
+`/etc/skel` on OpenBSD contains `.ssh`, mode 0700, so `useradd -m`
+hands over a home directory whose `.ssh` is already exactly what the
+contract wants. A fresh account therefore reconciles in two changes
+here — create the account, install the key — where FreeBSD takes four,
+because `/usr/share/skel` has no `.ssh` and the engine must create it
+root-owned and then repair its ownership. Same end state, and the
+difference is worth knowing before reading a change count as a fault. The login shell is `/bin/ksh`; the
 bootstrap program itself uses `#!/bin/sh`. An existing account with
 unexpected home/shell or a deliberate administrative lock is a
 conflict to report, not an invitation to override it
