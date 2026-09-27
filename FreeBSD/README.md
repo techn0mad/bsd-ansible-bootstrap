@@ -38,6 +38,41 @@ The five invariants are unchanged; only the mechanisms differ.
 | Python | `pkg install`, interpreters in `/usr/local/bin` | Same discovery approach and the same `PYTHON_MIN`/`PYTHON_MAX` question. |
 | Privilege escalation | `doas` or `sudo`, **from packages** | Neither is in the FreeBSD base system. See below. |
 
+## Confirmed on 15.1-RELEASE (arm64)
+
+Probed on a real guest rather than assumed. These are settled and
+[`adapter.sh`](adapter.sh) is written against them:
+
+| Question | Answer |
+| --- | --- |
+| Login shell | `/bin/sh`, `/bin/csh`, `/bin/tcsh` in base — **no ksh**, so OpenBSD's `/bin/ksh` cannot carry over |
+| `/home` | a real directory, not the historical symlink to `/usr/home`, so the shared home-directory check needs no loosening |
+| doas | not installed, and no `doas.conf` in either `/etc` or `/usr/local/etc` |
+| `wait` under `set -m` | returns the real status, so `run_bounded` works on ash as it does on pdksh |
+| `ls -ldn` | same column layout as OpenBSD, so the permission checks port unchanged |
+| `getent passwd` | works — but note it returns the **password hash** in field 2 when run as root, where OpenBSD returns `*`. Nothing reads that field; do not start. |
+| `rc.local` | `/etc/rc` contains no reference to it at all, so `rc.d` is not merely preferred here, it is the only option |
+| Interpreter query | `pkg rquery -g '%n %v' 'python3*'` works; `pkg search -q '^python3[0-9]*$'` returns nothing |
+| Probe cost | every service query is 0.01s and even `service -e` is 0.24s, so there is no equivalent of OpenBSD's 22-second `rcctl ls on` trap |
+
+The interpreter catalog needs care. It offers `python310` through
+`python315`, and three kinds of entry must not be selected:
+
+```text
+python3     3_4        a meta package; "3_4" is not an interpreter version
+python313t  3.13.15    free-threaded build -- a different runtime
+python315   3.15.0.b2  a pre-release
+```
+
+The version comes from `%v` rather than the package name, since the name
+squashes it (`python313`). Requiring at least one digit after `python3`
+drops the meta package and requiring the name to end there drops the
+`t` variants. The pre-release needs no special case **while a maximum is
+configured**: `PYTHON_MAX=3.14` selects `python314` and leaves
+`python315` alone. With no maximum it would install the beta — which is
+a sharper argument for setting one than OpenBSD could offer, where 3.13
+was the only version available.
+
 ## Decisions that must be made first
 
 These are the places where FreeBSD is not merely a renamed OpenBSD,
