@@ -19,14 +19,26 @@
 > second `apply` making no changes. A `sysrc sshd_enable=NO` drift test
 > was then repaired with exactly one change.
 >
-> A reboot then exercised the `rc.d` hook — and found a bug in its
-> `rcorder` placement, described under *Boot integration* below. It also
-> exercised `adapter_service_start`, by accident and for the wrong
-> reason, which nevertheless makes **all eight** adapter functions
-> hardware-tested here. The fix needs a reboot to confirm.
+> A reboot then exercised the `rc.d` hook and found a bug in its
+> `rcorder` placement — see *Boot integration* below. After the fix,
+> `rcorder` places the hook at 170, behind `LOGIN` at 160 and `sshd` at
+> 163, and a second reboot logged `no changes were needed`. The two boot
+> blocks sit adjacent in the log, one change line and then none, which is
+> the whole diagnosis:
 >
-> The repository-wide [README](../README.md) defines the contract both
-> platforms must satisfy.
+> ```text
+> --- 05:07:13 apply ---   change: Starting sshd   1 change made
+> --- 05:14:09 apply ---                           no changes were needed
+> ```
+>
+> All eight adapter functions have run on hardware. `adapter_service_start`
+> only ever ran because of that bug, and will not again now it is fixed —
+> exercising it deliberately needs `sshd` stopped, and so console access.
+>
+> Still unexercised: drift repair at boot rather than by hand, and a boot
+> with the package repository unreachable. The repository-wide
+> [README](../README.md) defines the contract both platforms must
+> satisfy.
 
 ## What this contains
 
