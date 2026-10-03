@@ -225,7 +225,10 @@ Notes on that command:
   redirects.
 - The archive's top-level directory is named `<repository>-<ref>`, so
   it is predictable and there is no need to strip it — just `cd` into
-  it. A `refs/heads/NAME` ref appears as just `NAME`.
+  it. A `refs/heads/NAME` ref appears as just `NAME`. One exception
+  worth knowing: a **tag loses its leading `v`**, so `tar.gz/v0.4`
+  extracts to `bsd-ansible-bootstrap-0.4`, not `-v0.4`. Measured, not
+  assumed; it applies to both `v0.4` and `refs/tags/v0.4`.
 - **Pass no patterns and no options after `f -`.** OpenBSD's `tar` is
   the `pax` binary and treats trailing arguments as member-name
   patterns, not options, so something like `tar xzf - -s '...'`

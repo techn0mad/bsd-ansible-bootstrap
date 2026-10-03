@@ -26,6 +26,154 @@ and exits. It is not a resident daemon or a replacement for Ansible.
 > 15.1, 11.0 — which is why v0.4 is tagged as a pre-release. Each
 > platform's README lists what remains unconfirmed there.
 
+## Quick start
+
+Fetch, install, validate from the controller, then enable the boot
+hook — in that order. The installer deliberately withholds the boot
+hook until you have validated the host, because unattended
+reconciliation on an unvalidated host is how a bad key or a broken
+`sshd` becomes permanent.
+
+Steps 2 and 4 run **as root on the target, from the console**. A
+pristine host has no `ansible` account yet, so there is no SSH route in.
+
+### 1. On the controller: have the key ready
+
+The installer asks for the controller's **public** key, and optionally
+its fingerprint:
+
+```sh
+# Paste this whole line at the first prompt:
+cat ~/.ssh/id_ed25519.pub
+
+# And just the SHA256: field at the second — not the whole ssh-keygen
+# line, which also carries the bit count and comment:
+ssh-keygen -lf ~/.ssh/id_ed25519.pub -E sha256 | awk '{ print $2 }'
+```
+
+Paste them rather than passing them in the environment: a value in the
+environment reaches shell history and process listings, and nothing
+typed at a prompt does. **Never supply a private key** — this host must
+never hold one, and the installer rejects anything that looks like one.
+
+The fingerprint is optional but worth supplying, and only if it reached
+you through a channel *independent* of the key itself; one that
+travelled with the key proves nothing.
+
+### 2. On the target, as root: fetch and install
+
+A minimal BSD installation has no Git, so fetch an archive with base
+tools. Pin a tag or a commit, never a branch — a branch resolves to
+whatever is on it at the moment you run it, which is the wrong property
+for something that provisions hosts.
+
+**OpenBSD and NetBSD** — `ftp(1)` is in base and speaks HTTPS:
+
+```sh
+ftp -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.4 | tar xzf -
+```
+
+**FreeBSD** — no `ftp` for this; use `fetch(1)`:
+
+```sh
+fetch -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.4 | tar xzf -
+```
+
+Then, on every platform, enter the directory for *this* host's OS and
+run the installer:
+
+```sh
+cd bsd-ansible-bootstrap-0.4/OpenBSD     # or FreeBSD, or NetBSD
+./install.sh
+```
+
+Two details that cost real debugging time:
+
+- The directory is `bsd-ansible-bootstrap-0.4`, **not** `-v0.4`:
+  GitHub strips a tag's leading `v` from the archive's top-level
+  directory name. (For a commit it is `-<sha>` exactly as given.)
+- **Pass nothing after `f -`.** OpenBSD's `tar` is the `pax` binary and
+  reads trailing arguments as member-name *patterns*, not options, so
+  `tar xzf - --strip-components=1` silently extracts nothing there. The
+  form above needs no option and works on all three.
+
+Each platform's wrapper asserts the OS first, so running the wrong one
+fails loudly instead of quietly doing something plausible.
+
+The run ends by reporting the two values the controller cannot derive
+for itself, and by telling you the hook was **not** installed:
+
+```text
+ansible-bootstrap: escalation: OK (ansible_become_method=sudo)
+ansible-bootstrap: python: OK (ansible_python_interpreter=/usr/local/bin/python3.14)
+```
+
+What each platform reports, as measured on the validation guests:
+
+| Platform | Escalation | `ansible_become_method` | `ansible_python_interpreter` |
+| --- | --- | --- | --- |
+| OpenBSD 7.9 | `doas`, from base | `community.general.doas` | `/usr/local/bin/python3.13` |
+| FreeBSD 15.1 | `sudo`, from packages | `sudo` | `/usr/local/bin/python3.14` |
+| NetBSD 11.0 | `sudo`, from pkgsrc | `sudo` | `/usr/pkg/bin/python3.14` |
+
+A pristine host takes **around eight changes** — FreeBSD 15.1 was
+measured at exactly eight — the count varying with how much has to be
+fetched. Read the path and the method out of your own `check` output
+rather than this table; they are what step 5 needs, and a different OS
+release will offer a different interpreter.
+
+FreeBSD and NetBSD must reach a package repository to configure
+escalation **at all**, since the tool is a package there. OpenBSD can
+always configure it, because `doas` is in the base system — that is the
+one structural difference between the platforms.
+
+### 3. From the controller: validate
+
+From a checkout of this repository on the controller — not on the
+target:
+
+```sh
+sh lib/controller-test.sh -a 192.168.1.88
+```
+
+Expect `10 passed, 0 failed`. This runs the checks the engine cannot
+perform on itself — a real SSH login, a real Ansible module run, and
+`become` through the target's become plugin, which it selects from the
+target's `uname -s`. Without `-a` it skips the two idempotency checks,
+which modify the host, and the count is 8.
+
+### 4. On the target: enable unattended reconciliation
+
+Only once step 3 passes:
+
+```sh
+./install.sh --enable-boot-hook
+```
+
+From then on every boot runs `apply` once, repairing drift and logging
+to `/var/log/ansible-bootstrap.log`. That file does not exist until the
+hook has run — a hand-run `apply` writes to stderr only.
+
+### 5. Point Ansible at it
+
+Use the two values `check` reported, not an assumed `python3` symlink:
+
+```ini
+[bsd]
+test1 ansible_host=192.168.1.87 ansible_python_interpreter=/usr/local/bin/python3.13 ansible_become_method=community.general.doas
+test2 ansible_host=192.168.1.88 ansible_python_interpreter=/usr/local/bin/python3.14 ansible_become_method=sudo
+test3 ansible_host=192.168.1.89 ansible_python_interpreter=/usr/pkg/bin/python3.14 ansible_become_method=sudo
+```
+
+`community.general.doas` needs that collection on the controller;
+`sudo` is built into `ansible-core`. See
+[Which escalation tool, and why it differs per platform](#which-escalation-tool-and-why-it-differs-per-platform).
+
+Per-platform detail, including what each one's quirks cost, is in
+[OpenBSD/README.md](OpenBSD/README.md),
+[FreeBSD/README.md](FreeBSD/README.md) and
+[NetBSD/README.md](NetBSD/README.md).
+
 ## Goals
 
 - Establish and preserve the minimum capabilities needed for an
