@@ -1,5 +1,7 @@
 # Ansible Bootstrap Service
 
+**v0.4**
+
 A small, idempotent set of scripts for making a newly installed BSD
 host **ready to be provisioned by Ansible**. The service runs at boot,
 reconciles only the prerequisites for Ansible access and execution,
@@ -20,8 +22,8 @@ and exits. It is not a resident daemon or a replacement for Ansible.
 > where the shell was leaking `run_bounded`'s internals into the
 > operator's log.
 >
-> Each platform is still validated on a **single release** — 7.9, 15.1,
-> 11.0 — so treat it as a tested prototype rather than a release. Each
+> Each platform is still validated on a **single OS release** — 7.9,
+> 15.1, 11.0 — which is why v0.4 is tagged as a pre-release. Each
 > platform's README lists what remains unconfirmed there.
 
 ## Goals
