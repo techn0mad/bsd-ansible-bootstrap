@@ -61,7 +61,7 @@ Probed on a real guest rather than assumed.
 | `/etc/skel/.ssh` | **absent** — like FreeBSD, so a fresh account costs four changes, not two |
 | Package tooling | pkgsrc's `pkg_add`/`pkg_info` in `/usr/sbin`, **no pkgin** — same *names* as OpenBSD's, different implementation |
 | `PYTHON_DIR` | `/usr/pkg/bin` — pkgsrc's prefix, not `/usr/local/bin` |
-| `doas` | **not present at all**, and no `doas.conf` anywhere — must come from pkgsrc |
+| `doas` | **not present at all**, and no `doas.conf` anywhere — must come from pkgsrc. Neither is NetBSD's native tool: `man.netbsd.org` has no `doas.1` or `sudo.8`, and base offers only `su(1)`. |
 | Service enable/disable | no `rcctl`, no `sysrc`; `service(8)` exists but has no enable subcommand |
 | Boot | `rc.d` and `rcorder`; `/etc/rc.local` exists but is run by `rc.d/local` |
 | Shared-engine assumptions | `getent`, `ls -ldn` layout, `pgrep -P`, `mktemp /var/run`, and `wait` under `set -m` all behave as the engine expects |
@@ -204,6 +204,19 @@ than assumed, by creating a throwaway account without `-p` and reading
 `/etc/master.passwd`, which gave a byte-identical
 `probeuser:*************`. So `-p '*'` bought nothing here but a line of
 noise in the log, and is omitted.
+
+### Privilege escalation has no native tool here
+
+NetBSD ships neither `doas` nor `sudo`: `man.netbsd.org` has no
+`doas.1` or `sudo.8`, base offers only `su(1)`, and both tools come from
+pkgsrc. So unlike OpenBSD — where `doas` is in base and is the
+documented mechanism — there is no platform-native answer to match.
+
+This implementation uses `doas` for shared-code reuse rather than
+convention, which on NetBSD means `sudo` has the stronger claim by
+history and pkgsrc prominence. See
+[the repository README](../README.md#why-doas-and-what-that-costs) for
+the reasoning and what it costs.
 
 ### Package access has to be derived
 

@@ -44,7 +44,7 @@ The service maintains these five invariants:
 | Service account | Dedicated `ansible` account exists, has the expected home and usable login shell, and is permitted to authenticate by public key. |
 | SSH authentication | The configured controller public key is present in the account's `authorized_keys`, with safe ownership and permissions. |
 | Python | A Python 3 interpreter compatible with the selected `ansible-core` version is available; its path can be reported to the controller. |
-| Privilege escalation | The `ansible` account can execute commands as root noninteractively, using the OS-native supported mechanism (`doas` or `sudo`). |
+| Privilege escalation | The `ansible` account can execute commands as root noninteractively, through a supported mechanism (`doas` or `sudo`). |
 
 The service **does not** manage general host configuration,
 application packages, firewall rules, other users, or the broader SSH
@@ -196,6 +196,45 @@ service, but are not the ongoing readiness mechanism.
 A fingerprint is an identifier, **not a signature**. Comparing a
 fingerprint with a value independently obtained from the controller is
 the useful authenticity check.
+
+### Why `doas`, and what that costs
+
+All three platforms are configured through `doas`, but only OpenBSD
+makes that the native choice — there it is in the base system and is the
+documented mechanism. On FreeBSD and NetBSD neither `doas` nor `sudo` is
+in base; both come from packages, and both platforms' own documentation
+treats **`sudo`** as the standard. The FreeBSD Handbook puts it plainly:
+"The most used application is currently Sudo", describing `doas` as "an
+alternative to the widely used sudo(8) command."
+
+So the choice is made on engineering grounds rather than convention:
+
+- One policy implementation serves every platform. Generating and
+  validating `doas.conf` — a marked block, a refusal to duplicate its
+  own rule, a refusal to outrank an administrator's — is written once in
+  the engine, with only `DOAS_BIN` and `DOAS_CONF` differing per
+  adapter. A `sudoers` equivalent would be a second implementation.
+- `doas.conf` is far simpler to generate correctly than `sudoers`, and
+  this is a file that grants root. Fewer ways to get it subtly wrong is
+  a safety property, not just a convenience.
+
+The costs are real and worth stating:
+
+- It is not what a FreeBSD or NetBSD administrator would expect to find.
+- It adds a controller-side dependency. `sudo` is `ansible-core`'s
+  default become method; `doas` needs the `community.general` collection
+  for its become plugin, which is why
+  [`lib/controller-test.sh`](lib/controller-test.sh) checks for that
+  plugin before anything else.
+
+Supporting `sudo` as well would not be a rewrite — `DOAS_BIN`,
+`DOAS_CONF` and `adapter_escalation_prepare` already isolate the tool —
+but the policy writing itself lives in the engine and is `doas`-specific
+in both syntax and its `doas -C` validation. Making it pluggable means
+another adapter function, and
+[`lib/adapter-contract.md`](lib/adapter-contract.md) argues against
+widening the contract before there is a second implementation to justify
+it.
 
 ### Privilege and configuration boundaries
 
