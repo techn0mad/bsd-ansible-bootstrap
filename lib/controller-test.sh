@@ -12,6 +12,11 @@
 # only a real module run proves the interpreter it reported can execute
 # Ansible.
 #
+# Shared between platforms — nothing in it is OS-specific. The become
+# method and the interpreter path are options rather than constants, and
+# the one path it assumes on the target, the engine's own location, is
+# the same on OpenBSD and FreeBSD.
+#
 # Read-only by default. -a additionally runs `apply` on the target twice
 # to confirm reconciliation is idempotent, which does modify the host.
 #

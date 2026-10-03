@@ -1,0 +1,85 @@
+#!/bin/sh
+#
+# Maintain Ansible readiness at boot.
+#
+# PROVIDE: ansible_bootstrap
+# REQUIRE: NETWORKING LOGIN sshd
+# KEYWORD: nojail
+#
+# A short-lived boot task, not a daemon: it reconciles the readiness
+# prerequisites and exits.
+#
+# The REQUIRE list is load-bearing, and NETWORKING alone was wrong:
+#
+#   NETWORKING  the package repository may be needed
+#   LOGIN       nothing here may delay the console becoming usable. A
+#               package operation can consume the whole PKG_TIMEOUT, and
+#               ordered before LOGIN that would hold up the console for
+#               minutes.
+#   sshd        FreeBSD's sshd requires LOGIN and so starts late. Run
+#               before it and the engine finds sshd enabled but not yet
+#               started, "repairs" it by starting it early, and reports
+#               a change on every boot of a host with nothing wrong.
+#
+# So this must run after the services whose state it checks have had
+# their turn. Adding a managed service to the adapter means adding it
+# here too.
+#
+# Enable with:  sysrc ansible_bootstrap_enable=YES
+
+. /etc/rc.subr
+
+name=ansible_bootstrap
+rcvar=ansible_bootstrap_enable
+desc="Reconcile Ansible readiness prerequisites"
+
+load_rc_config $name
+
+: ${ansible_bootstrap_enable:="NO"}
+: ${ansible_bootstrap_engine:="/usr/local/libexec/ansible-bootstrap"}
+: ${ansible_bootstrap_log:="/var/log/ansible-bootstrap.log"}
+
+start_cmd="ansible_bootstrap_start"
+stop_cmd=":"
+status_cmd="ansible_bootstrap_status"
+
+# Announce the work and report the outcome on the console, with the
+# detail going to the log. Without this the console shows an
+# unexplained pause, and a failed reconciliation is visible only to
+# someone who thinks to read the log.
+#
+# Returns 0 even when reconciliation fails: this is a readiness task,
+# and a non-zero exit from an rc.d script during boot is not worth the
+# risk of disrupting the rest of the sequence. The failure is reported
+# on the console and recorded in the log, and a later boot or a manual
+# apply retries.
+ansible_bootstrap_start()
+{
+    if [ ! -x "$ansible_bootstrap_engine" ]; then
+        warn "$ansible_bootstrap_engine is missing or not executable"
+        return 0
+    fi
+
+    echo "ansible-bootstrap: reconciling Ansible readiness"
+
+    if "$ansible_bootstrap_engine" apply >> "$ansible_bootstrap_log" 2>&1; then
+        echo "ansible-bootstrap: ready"
+    else
+        echo "ansible-bootstrap: FAILED, see $ansible_bootstrap_log"
+    fi
+
+    return 0
+}
+
+# `service ansible_bootstrap status` reports current readiness rather
+# than whether anything is running, because nothing is: the engine's
+# own read-only check is the meaningful answer.
+ansible_bootstrap_status()
+{
+    [ -x "$ansible_bootstrap_engine" ] ||
+        err 1 "$ansible_bootstrap_engine is missing or not executable"
+
+    "$ansible_bootstrap_engine" check
+}
+
+run_rc_command "$1"

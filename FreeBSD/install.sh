@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# OpenBSD Ansible bootstrap installer.
+# FreeBSD Ansible bootstrap installer.
 #
 # The work is in ../lib/install.sh, which is shared between platforms.
 # This wrapper exists so that the documented invocation — cd into the
@@ -11,8 +11,8 @@
 
 set -eu
 
-[ "$(uname -s)" = OpenBSD ] || {
-    echo "install: ERROR: this is the OpenBSD installer; this host is $(uname -s)" >&2
+[ "$(uname -s)" = FreeBSD ] || {
+    echo "install: ERROR: this is the FreeBSD installer; this host is $(uname -s)" >&2
     exit 2
 }
 

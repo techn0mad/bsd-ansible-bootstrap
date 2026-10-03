@@ -20,6 +20,23 @@ Ansible.
 > each repaired unattended at boot, changing only what was broken. On a
 > healthy host `apply` repairs nothing and reaches no network at all.
 >
+> Re-validated after the engine was split from
+> [this adapter](adapter.sh): reinstalled on the same guest,
+> `controller-test.sh -a` passed 10/10, and the repair paths that run
+> through the adapter were re-exercised — a disabled `sshd` re-enabled,
+> and a removed interpreter re-queried, re-selected and reinstalled.
+> `adapter_service_start` has since been exercised by stopping `sshd`
+> while leaving it enabled: `check` reported `sshd: NOT READY` and
+> `apply` logged one change, `Starting sshd` and not `Enabling sshd`,
+> which is what distinguishes a working `adapter_service_enabled` from a
+> broken one. `adapter_create_account` has since been exercised too, by
+> deleting the account and reconciling: `check` reported `account`,
+> `authorized_key` and `doas` all NOT READY — `doas` because its check
+> runs `su ansible`, which cannot work without the account — and `apply`
+> recreated all three. The account returned with a different uid, which
+> incidentally confirmed that reading uid and gid from the `passwd` entry
+> rather than hardcoding them was the right call.
+>
 > Not yet exercised: a boot with the package mirror **unreachable**,
 > and any release other than 7.9. Treat it as a working prototype
 > rather than a tested release, and see the checklist at the end for
@@ -43,10 +60,11 @@ change.
 
 ## Files and ownership
 
-The initial single-script layout is:
+The installed layout is:
 
 ```text
-/usr/local/libexec/ansible-bootstrap    # root-owned executable, mode 0700
+/usr/local/libexec/ansible-bootstrap         # root-owned engine, mode 0700
+/usr/local/libexec/ansible-bootstrap-adapter # root-owned adapter, mode 0700
 /etc/ansible-bootstrap/                 # root-owned directory, mode 0700
 /etc/ansible-bootstrap/controller.pub   # root-owned public key, mode 0600
 /home/ansible/.ssh/                     # ansible-owned directory, mode 0700
@@ -120,8 +138,10 @@ reconciled destination. Key rotation and multiple controller keys
 require an explicit future interface.
 
 The paths above are the current prototype's conventions, not an
-OpenBSD packaging standard. A later refactor may split the common
-engine from the OpenBSD-specific adapter.
+OpenBSD packaging standard. The engine itself is shared —
+[`lib/ansible-bootstrap`](../lib/ansible-bootstrap) — and everything
+OpenBSD-specific lives in [`adapter.sh`](adapter.sh), which the engine
+sources as root and therefore verifies first.
 
 ## Initialization and trust
 
@@ -347,7 +367,15 @@ configuration parse for proof of usable SSH or privilege escalation.
 ## OpenBSD-specific mechanisms
 
 **Account:** Use native `useradd` for initial creation and the system
-account database for inspection. The login shell is `/bin/ksh`; the
+account database for inspection.
+
+`/etc/skel` on OpenBSD contains `.ssh`, mode 0700, so `useradd -m`
+hands over a home directory whose `.ssh` is already exactly what the
+contract wants. A fresh account therefore reconciles in two changes
+here — create the account, install the key — where FreeBSD takes four,
+because `/usr/share/skel` has no `.ssh` and the engine must create it
+root-owned and then repair its ownership. Same end state, and the
+difference is worth knowing before reading a change count as a fault. The login shell is `/bin/ksh`; the
 bootstrap program itself uses `#!/bin/sh`. An existing account with
 unexpected home/shell or a deliberate administrative lock is a
 conflict to report, not an invitation to override it
@@ -586,64 +614,16 @@ mechanism.
 
 ## Controller-side tests
 
-`controller-test.sh` runs the checks the engine cannot perform on
-itself. It lives here rather than on the target: it is executed **from
-the Ansible controller**, against a host that has already been
-provisioned.
+`../lib/controller-test.sh` runs the checks the engine cannot perform on
+itself — a real SSH login, a real Ansible module run, `become` through
+the doas plugin. It is shared between platforms and executed **from the
+Ansible controller**, so it is described in the
+[repository README](../README.md#controller-side-tests) rather than
+duplicated here.
 
 ```sh
-./controller-test.sh 192.168.1.87
+../lib/controller-test.sh 192.168.1.87
 ```
-
-```text
-preflight
-  ok    ansible runs (ansible [core 2.21.4])
-  ok    become plugin available: community.general.doas
-
-ssh
-  ok    key-only login as ansible
-  ok    authorized_keys contains this key (SHA256:aWo3...)
-  ok    doas -n id -u returns 0
-
-ansible
-  ok    ping module
-  ok    fact gathering
-        ansible_distribution = OpenBSD
-        ansible_python_version = 3.13.13
-        interpreter   = /usr/local/bin/python3.13
-  ok    become via community.general.doas reaches root
-
-8 passed, 0 failed
-```
-
-Options: `-u` account, `-i` identity, `-p` to force an interpreter
-path rather than letting Ansible discover one, `-m` become method, `-t`
-connect timeout. It exits non-zero if any check fails.
-
-Why these checks and not others — each one asserts something the
-engine's own `check` cannot:
-
-- The engine can confirm a key is in `authorized_keys`; only a real
-  login proves `sshd` will accept it. `IdentitiesOnly=yes` is set so a
-  loaded agent cannot quietly offer a different key and make a broken
-  `authorized_keys` look fine, and `BatchMode=yes` so an unknown host
-  key fails instead of prompting.
-- Comparing the fingerprint in `authorized_keys` against the
-  controller's own key proves the target trusts *this* key and not
-  merely some key — which catches a rotated or replaced controller key
-  that would otherwise surface much later as a mystifying auth failure.
-- The engine tests `doas` through `su`; Ansible reaches it over SSH
-  through a become plugin. Those are different paths and both can fail
-  independently.
-- Fact gathering exercises the interpreter far harder than `ping`, and
-  reports the path Ansible actually chose — the value that belongs in
-  inventory.
-
-`-a` additionally runs `apply` on the target twice and asserts the
-second run reports no changes, which is the idempotency property the
-whole design rests on. It is not the default because, unlike everything
-else here, it modifies the host. It requires an engine recent enough to
-report change counts.
 
 ## Manual validation
 
@@ -694,12 +674,12 @@ OpenBSD 7.9 (see **Status** above). What follows is what that single
 run did *not* establish. Before calling this directory
 production-ready, work through at least the following:
 
-- Boot a host with the package mirror **unreachable**. A boot with a
-  reachable mirror has installed an interpreter successfully, so
-  `run_bounded` has now run for real, but the timeout and the
-  cannot-query diagnostic have only ever been exercised against
-  stubs — and that is the path whose whole purpose is not stalling
-  boot.
+- Exercise a boot, rather than a hand-run `apply`, with the package
+  repository unreachable. The bound itself is now verified on hardware:
+  shadowing `pkg_info` with a sleeper made `apply` take 25 seconds under
+  a 15-second bound rather than the sleeper's 90, logged `Exceeded 15s;
+  terminating`, and left no orphan. What has not been seen is that
+  happening unattended during boot.
 
 - Confirm OpenBSD 7.9 availability and exact behavior of every
   account-management, package, and `doas` command used.
