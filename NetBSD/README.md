@@ -1,16 +1,29 @@
 # NetBSD implementation — Ansible bootstrap service
 
-> **Status: written, not yet run on a host.** The adapter, boot hook and
-> `rc.d` service are implemented against behaviour probed on an
-> 11.0 aarch64 guest — see *Confirmed on 11.0* below — and the shared
-> engine, installer and controller-side tests are the same code the
-> other two platforms run, **unmodified**. Nothing here has installed or
-> reconciled anything yet.
+> **Status:** A pristine 11.0 aarch64 guest reached all five invariants
+> in nine changes: key stored, account created, controller key
+> installed, `.ssh` and `authorized_keys` ownership set, `doas`
+> installed from pkgsrc, `/usr/pkg/etc` created, passwordless `doas`
+> configured, and `python314` installed at `/usr/pkg/bin/python3.14`.
+> One more change than FreeBSD, the extra being the `PKG_SYSCONFDIR`
+> that pkgsrc does not create.
 >
-> The [OpenBSD](../OpenBSD/README.md) and
-> [FreeBSD](../FreeBSD/README.md) implementations are the validated
-> references; the repository-wide [README](../README.md) defines the
-> contract all three must satisfy.
+> `lib/controller-test.sh -a` then passed 10/10 against that host,
+> unmodified — the same script the other two platforms use. The
+> `rc.conf` marked block, this platform's most distinctive mechanism,
+> was exercised by appending a last-wins `sshd=NO`: `check` reported
+> `sshd: NOT READY`, `apply` wrote the block, and the result was still
+> valid shell.
+>
+> Seven of the eight adapter functions have run on hardware. Only
+> `adapter_service_start` has not, since that needs `sshd` stopped and
+> so console access. Not yet exercised either: the `rc.d` boot hook,
+> which the first install deliberately withheld.
+>
+> The shared engine, installer and controller-side tests are byte-identical
+> to what [OpenBSD](../OpenBSD/README.md) and
+> [FreeBSD](../FreeBSD/README.md) run; the repository-wide
+> [README](../README.md) defines the contract all three satisfy.
 
 ## What this contains
 

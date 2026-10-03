@@ -5,8 +5,10 @@ host **ready to be provisioned by Ansible**. The service runs at boot,
 reconciles only the prerequisites for Ansible access and execution,
 and exits. It is not a resident daemon or a replacement for Ansible.
 
-> **Project status:** NetBSD is written against probed 11.0 behaviour and
-> **has not yet run on a host**; see
+> **Project status:** All three platforms are validated on hardware —
+> OpenBSD 7.9, FreeBSD 15.1 and NetBSD 11.0 — each reaching all five
+> invariants from a pristine host and passing the controller-side suite.
+> NetBSD's boot hook has not yet run; see
 > [NetBSD/README.md](NetBSD/README.md). The OpenBSD implementation is
 > validated on a 7.9 guest — all five invariants, drift repaired unattended at boot, and a
 > controller-side Ansible run — but is still a prototype rather than a
