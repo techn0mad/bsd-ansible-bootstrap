@@ -4,7 +4,14 @@
 #
 # PROVIDE: ansible_bootstrap
 # REQUIRE: NETWORKING LOGIN sshd
-# KEYWORD: nostart
+#
+# Deliberately no KEYWORD line. `nostart` was tried first, by analogy
+# with the FreeBSD script's `nojail`, and means the opposite of what it
+# reads like: /etc/rc runs `rcorder -s nostart`, so the keyword excludes
+# a script from the boot sequence entirely. The hook installed, reported
+# itself enabled via its own rcvar, and would never have run -- visible
+# only because `service -e` disagreed with rc.conf. The only base script
+# using it is downinterfaces, which runs at shutdown.
 #
 # A short-lived boot task, not a daemon: it reconciles the readiness
 # prerequisites and exits.
@@ -28,7 +35,10 @@
 # Enable by adding ansible_bootstrap=YES to /etc/rc.conf; the installer
 # does that in a marked block.
 
-. /etc/rc.subr
+# The idiom every base rc.d script uses, rather than a plain `.`: it
+# avoids re-sourcing when rc.subr is already loaded, which it is when
+# service(8) evaluates a script.
+$_rc_subr_loaded . /etc/rc.subr
 
 name="ansible_bootstrap"
 rcvar="ansible_bootstrap"

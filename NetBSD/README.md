@@ -117,7 +117,29 @@ inspects — reporting a spurious repair on every boot — and before the
 console is usable, where a package operation consuming the whole
 `PKG_TIMEOUT` would hold `LOGIN` for minutes. That is the bug FreeBSD
 cost a boot cycle to find; here the order was read first, and
-`rc.d/ansible_bootstrap` is `REQUIRE: NETWORKING LOGIN sshd`.
+`rc.d/ansible_bootstrap` is `REQUIRE: NETWORKING LOGIN sshd`, which
+`rcorder` places at 133.
+
+**The script carries no `KEYWORD` line, and must not.** `nostart` was
+tried first, by analogy with the FreeBSD script's `nojail`. It means the
+opposite of what it reads like:
+
+```sh
+/etc/rc:153:  files=$(rcorder -s nostart ${rc_rcorder_flags} ${scripts})
+```
+
+`/etc/rc` *skips* scripts carrying it, so the keyword removes a script
+from the boot sequence entirely — `rcorder` listed the hook at 133 while
+`rcorder -s nostart` did not list it at all. The hook installed
+cleanly, `rc.conf` enabled it, and its own `rcvar` reported `YES`; it
+simply would never have run. The only base script using `nostart` is
+`downinterfaces`, which runs at shutdown.
+
+That was caught before a reboot only because `service -e
+ansible_bootstrap` disagreed with `rc.conf`, which is worth knowing as a
+check in its own right: `rcvar` reports what the script *thinks*, while
+`service -e` reports whether `rc` will actually run it. They can differ,
+and when they do, `service -e` is the one that matters.
 
 So OpenBSD uses `rc.local` and the other two use `rc.d`, and the reason
 is ordering rather than preference.
