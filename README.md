@@ -5,8 +5,10 @@ host **ready to be provisioned by Ansible**. The service runs at boot,
 reconciles only the prerequisites for Ansible access and execution,
 and exits. It is not a resident daemon or a replacement for Ansible.
 
-> **Project status:** The OpenBSD implementation is validated on a 7.9
-> guest — all five invariants, drift repaired unattended at boot, and a
+> **Project status:** NetBSD is written against probed 11.0 behaviour and
+> **has not yet run on a host**; see
+> [NetBSD/README.md](NetBSD/README.md). The OpenBSD implementation is
+> validated on a 7.9 guest — all five invariants, drift repaired unattended at boot, and a
 > controller-side Ansible run — but is still a prototype rather than a
 > tested release; see [OpenBSD/README.md](OpenBSD/README.md) for what
 > remains unconfirmed. The FreeBSD implementation is written against
@@ -119,7 +121,14 @@ bsd-ansible-bootstrap/
 │   ├── adapter.sh               # engine adapter, deployed
 │   ├── boot-hook.sh             # installer adapter, not deployed
 │   └── install.sh               # wrapper
-└── FreeBSD/
+├── FreeBSD/
+│   ├── README.md
+│   ├── adapter.sh
+│   ├── boot-hook.sh
+│   ├── install.sh
+│   └── rc.d/
+│       └── ansible_bootstrap
+└── NetBSD/
     ├── README.md
     ├── adapter.sh
     ├── boot-hook.sh
