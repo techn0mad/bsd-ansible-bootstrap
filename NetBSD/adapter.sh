@@ -9,11 +9,32 @@
 # ksh is in the NetBSD base system, as on OpenBSD and unlike FreeBSD.
 LOGIN_SHELL=/bin/ksh
 
-# doas is not in the base system here; it comes from pkgsrc, which
-# installs under /usr/pkg rather than /usr/local.
-DOAS_BIN=/usr/pkg/bin/doas
-DOAS_CONF=/usr/pkg/etc/doas.conf
-DOAS_PACKAGE=doas
+# NetBSD defaults to sudo. Neither tool is in the base system here --
+# both come from pkgsrc, which installs under /usr/pkg rather than
+# /usr/local -- so there is no OS-native tool to defer to, and sudo is
+# the one ansible-core supports without an added collection. Only
+# OpenBSD, where doas is in base, defaults to doas.
+ESCALATION_STYLE=sudo
+ESCALATION_BIN=/usr/pkg/bin/sudo
+ESCALATION_PACKAGE=sudo
+
+# The drop-in this service owns outright, and the administrator's file
+# it is included from. The shipped sudoers ends with
+# "@includedir /usr/pkg/etc/sudoers.d", measured on 11.0 as the last
+# effective line of the file, so a drop-in is read and is evaluated
+# last.
+#
+# Unlike the doas package, the sudo package does create its
+# PKG_SYSCONFDIR -- both /usr/pkg/etc/sudoers and the drop-in
+# directory, measured on 11.0. The engine creates the directory anyway
+# if it is missing, so this is not relied on.
+ESCALATION_CONF=/usr/pkg/etc/sudoers.d/ansible-bootstrap
+ESCALATION_POLICY=/usr/pkg/etc/sudoers
+
+# visudo checks a file given with -c -f without installing it, exiting 0
+# when it parses and 1 when it does not -- including when the file is
+# missing. pkgsrc puts it in sbin, not bin, unlike sudo itself.
+ESCALATION_VALIDATE='/usr/pkg/sbin/visudo -c -f'
 
 # pkgsrc installs interpreters here. This is the one constant the
 # contract anticipates an adapter reassigning.
@@ -24,7 +45,7 @@ PYTHON_DIR=/usr/pkg/bin
 # A stock NetBSD installation has no PKG_PATH and no package tooling
 # configured, so without this nothing can be installed -- which on this
 # platform also means privilege escalation cannot be configured, since
-# doas is a package. Deriving it is what makes the contract reachable on
+# sudo is a package. Deriving it is what makes the contract reachable on
 # an unmodified host.
 #
 # Exported for this adapter's own calls only, never written to the host:
@@ -42,7 +63,7 @@ export PKG_PATH
 # neither OpenBSD's rcctl nor FreeBSD's sysrc. That file belongs to the
 # administrator and is sourced as shell, so the last assignment wins and
 # ours goes in a marked block at the end -- the same discipline the
-# engine applies to doas.conf, for the same reason.
+# engine applies to doas.conf on OpenBSD, for the same reason.
 RC_CONF=/etc/rc.conf
 RC_BEGIN='# BEGIN ansible-bootstrap'
 RC_END='# END ansible-bootstrap'
@@ -64,38 +85,24 @@ adapter_create_account()
     useradd -m -d "$HOME_DIR" -s "$LOGIN_SHELL" "$ACCOUNT"
 }
 
-# doas comes from pkgsrc here, so escalation depends on a working
+# sudo comes from pkgsrc here, so escalation depends on a working
 # package manager and a reachable repository -- the same inversion as
 # FreeBSD, one step deeper because the repository also has to be
 # derived before anything can be fetched.
 adapter_escalation_prepare()
 {
-    [ -x "$DOAS_BIN" ] && return 0
+    [ -x "$ESCALATION_BIN" ] && return 0
 
-    changed "Installing $DOAS_PACKAGE"
+    changed "Installing $ESCALATION_PACKAGE"
 
-    if ! adapter_package_install "$DOAS_PACKAGE"; then
-        log "Installing $DOAS_PACKAGE failed or timed out."
+    if ! adapter_package_install "$ESCALATION_PACKAGE"; then
+        log "Installing $ESCALATION_PACKAGE failed or timed out."
     fi
 
     # The install status is advisory; the binary appearing is the gate.
-    [ -x "$DOAS_BIN" ] ||
-        die "$DOAS_BIN is still missing after installing $DOAS_PACKAGE"
-
-    # pkgsrc does not create its PKG_SYSCONFDIR: the doas package ships
-    # the binary and an example, but not /usr/pkg/etc itself. The engine
-    # is about to write policy there via mktemp, which fails with ENOENT
-    # on a missing parent and reports only that it could not create a
-    # temporary file -- a diagnostic that says nothing about the real
-    # cause. Confirmed with `strings /usr/pkg/bin/doas`: the path is
-    # compiled into the binary, so it is this directory or nothing.
-    doas_dir=${DOAS_CONF%/*}
-
-    if [ ! -d "$doas_dir" ]; then
-        changed "Creating $doas_dir for doas policy"
-        install -d -o root -g wheel -m 0755 "$doas_dir" ||
-            die "Cannot create $doas_dir"
-    fi
+    [ -x "$ESCALATION_BIN" ] ||
+        die "$ESCALATION_BIN is still missing after installing" \
+            "$ESCALATION_PACKAGE"
 }
 
 # `service -e NAME` prints the script path and exits 0 when the service
@@ -166,7 +173,7 @@ adapter_service_enable()
 
     # rc.conf is sourced by /etc/rc, so a syntax error here would break
     # boot. Validate before installing, the way the engine validates a
-    # generated doas.conf with doas -C.
+    # generated policy file with the mechanism's own parser.
     /bin/sh -n "$rc_tmp" 2>/dev/null || {
         rm -f "$rc_tmp"
         die "Generated $RC_CONF is not valid shell; refusing to install it"

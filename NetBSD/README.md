@@ -8,6 +8,27 @@
 > One more change than FreeBSD, the extra being the `PKG_SYSCONFDIR`
 > that pkgsrc does not create.
 >
+> **Since then this platform's default escalation tool changed from
+> `doas` to `sudo`** — see
+> [Privilege escalation has no native tool here](#privilege-escalation-has-no-native-tool-here)
+> below. The same guest was re-validated after the switch: 10/10 again,
+> with `become method sudo (detected)`, and the eight fault-injection
+> cases tabulated in
+> [the FreeBSD README](../FreeBSD/README.md#escalation-fault-injection)
+> all behaved identically here.
+>
+> A **pristine** 11.0 guest was then installed from scratch on the
+> `sudo` default, and the longest-outstanding validation on this
+> platform — [drift repaired unattended at
+> boot](#drift-repaired-unattended-at-boot--done) — was finally run,
+> with the drop-in deleted *and* the administrator's `sshd=YES` flipped.
+> One boot repaired both in three changes; a second with no drift made
+> none. The last outstanding case on this platform, [a boot with the
+> package repository unreachable](#a-boot-with-the-package-repository-unreachable--done),
+> was run too, and turned up a real defect: NetBSD's `/bin/sh` was
+> leaking `run_bounded`'s internals into the operator's log on the
+> timeout path. **Every validation written up here has now been run.**
+>
 > `lib/controller-test.sh -a` then passed 10/10 against that host,
 > unmodified — the same script the other two platforms use. The
 > `rc.conf` marked block, this platform's most distinctive mechanism,
@@ -39,7 +60,7 @@
 ```text
 NetBSD/
 ├── README.md
-├── adapter.sh       # engine adapter: accounts, packages, services, doas paths
+├── adapter.sh       # engine adapter: accounts, packages, services, escalation paths
 ├── boot-hook.sh     # installer adapter: the rc.d script and rc.conf assignment
 ├── install.sh       # wrapper over lib/install.sh
 └── rc.d/
@@ -62,6 +83,7 @@ Probed on a real guest rather than assumed.
 | Package tooling | pkgsrc's `pkg_add`/`pkg_info` in `/usr/sbin`, **no pkgin** — same *names* as OpenBSD's, different implementation |
 | `PYTHON_DIR` | `/usr/pkg/bin` — pkgsrc's prefix, not `/usr/local/bin` |
 | `doas` | **not present at all**, and no `doas.conf` anywhere — must come from pkgsrc. Neither is NetBSD's native tool: `man.netbsd.org` has no `doas.1` or `sudo.8`, and base offers only `su(1)`. |
+| `sudo` | also absent. The pkgsrc `sudo` package provides `/usr/pkg/bin/sudo` (setuid, `4511`) and `/usr/pkg/sbin/visudo`, and — unlike the `doas` package — **does** create its `PKG_SYSCONFDIR`: `/usr/pkg/etc/sudoers` (`0440`) and `/usr/pkg/etc/sudoers.d` (`0755`). The shipped `sudoers` ends with `@includedir /usr/pkg/etc/sudoers.d` as its last effective line, so a drop-in is read and is evaluated last. |
 | Service enable/disable | no `rcctl`, no `sysrc`; `service(8)` exists but has no enable subcommand |
 | Boot | `rc.d` and `rcorder`; `/etc/rc.local` exists but is run by `rc.d/local` |
 | Shared-engine assumptions | `getent`, `ls -ldn` layout, `pgrep -P`, `mktemp /var/run`, and `wait` under `set -m` all behave as the engine expects |
@@ -153,8 +175,10 @@ and when they do, `service -e` is the one that matters.
 So OpenBSD uses `rc.local` and the other two use `rc.d`, and the reason
 is ordering rather than preference.
 
-### pkgsrc does not create its own PKG_SYSCONFDIR
+### pkgsrc does not always create its own PKG_SYSCONFDIR
 
+A pkgsrc package is not obliged to create the directory its
+configuration belongs in, and the two escalation packages differ on it.
 The `doas` package installs the binary setuid root at
 `/usr/pkg/bin/doas` and an example under `share`, but **not
 `/usr/pkg/etc`**. The config path is compiled into the binary —
@@ -164,11 +188,8 @@ $ strings /usr/pkg/bin/doas | grep -i doas.conf
 /usr/pkg/etc/doas.conf
 ```
 
-— so it is that directory or nothing, and the adapter creates it after
-installing the package.
-
-Without it the first install fails in a way that says nothing about the
-cause:
+— so it is that directory or nothing. Without it the first install
+failed in a way that said nothing about the cause:
 
 ```text
 ansible-bootstrap: change: Configuring passwordless doas
@@ -176,11 +197,17 @@ mktemp: mkstemp failed on /usr/pkg/etc/doas.conf.9yAGLCIP: No such file or direc
 ansible-bootstrap: ERROR: Cannot create temporary doas configuration
 ```
 
-The engine reports only that it could not create a temporary file,
+The engine reported only that it could not create a temporary file,
 because from its point of view that is all that happened. Neither
-predecessor could surface this: OpenBSD's `doas.conf` lives in `/etc`,
-which always exists, and FreeBSD's package creates
-`/usr/local/etc` itself.
+predecessor could surface it: OpenBSD's `doas.conf` lives in `/etc`,
+which always exists, and FreeBSD's package creates `/usr/local/etc`
+itself.
+
+The `sudo` package, now the default here, *does* create
+`/usr/pkg/etc/sudoers.d` — measured, not assumed. The engine creates the
+drop-in's parent directory anyway when it is missing, so this platform's
+lesson outlived the package that taught it: the cost is one `stat`, and
+the failure it prevents is a diagnostic that points at the wrong thing.
 
 ### Account creation takes no `-p`
 
@@ -212,18 +239,33 @@ NetBSD ships neither `doas` nor `sudo`: `man.netbsd.org` has no
 pkgsrc. So unlike OpenBSD — where `doas` is in base and is the
 documented mechanism — there is no platform-native answer to match.
 
-This implementation uses `doas` for shared-code reuse rather than
-convention, which on NetBSD means `sudo` has the stronger claim by
-history and pkgsrc prominence. See
-[the repository README](../README.md#why-doas-and-what-that-costs) for
-the reasoning and what it costs.
+With no native tool to match, the default is `sudo`, which has the
+stronger claim here on two counts: pkgsrc prominence and history, and
+being the one `ansible-core` supports without the `community.general`
+collection. Defaulting to `doas` would mean imposing a controller-side
+dependency in order to use the *less* conventional tool. See
+[the repository README](../README.md#which-escalation-tool-and-why-it-differs-per-platform)
+for the full reasoning.
+
+This platform was first implemented with `doas`, for reuse of the
+engine's existing `doas.conf` writer; the engine now holds a writer for
+each style and the adapter supplies only paths. The `sudo` one is the
+simpler shape — a drop-in is a file this service owns outright — at the
+cost of having no marker to recognise its own work by, so drift is
+detected by comparing content, ownership and mode instead. On NetBSD
+that distinction was worth confirming directly, because `sudo` silently
+ignores a drop-in it does not trust:
+
+```text
+sudo: /usr/pkg/etc/sudoers.d/ansible-bootstrap is owned by uid 1001, should be 0
+```
 
 ### Package access has to be derived
 
 A stock installation has **no `PKG_PATH`** and nothing under
 `/usr/pkg`. Both predecessors arrived with working package access; this
-one does not, and because `doas` is also a package, privilege escalation
-depends on fixing that. FreeBSD's inversion was "escalation needs the
+one does not, and because the escalation tool is also a package,
+privilege escalation depends on fixing that. FreeBSD's inversion was "escalation needs the
 package manager"; NetBSD's is "escalation needs the package manager,
 which needs configuring first".
 
@@ -259,50 +301,86 @@ pre-release and no free-threaded variants, so `PYTHON_MAX=3.14` selects
 
 The plan in the repository README applies unchanged. Done on an 11.0
 aarch64 guest: a pristine install reaching all five invariants,
-`adapter_escalation_prepare` installing `doas` from pkgsrc,
-`lib/controller-test.sh -a` at 10/10, the `rc.conf` marked block, the
-`rc.d` hook at boot, and every adapter function including
+`adapter_escalation_prepare` installing the escalation package from
+pkgsrc, `lib/controller-test.sh -a` at 10/10, the `rc.conf` marked
+block, the `rc.d` hook at boot, and every adapter function including
 `adapter_service_start`.
 
-Two remain. Both need the console, because both can leave the host
-unreachable if the repair they exercise does not work.
+### Drift repaired unattended at boot — done
 
-### Drift repaired unattended at boot
+Run on a pristine 11.0 guest with the hook installed, injecting **two**
+faults at once: the `sudoers.d` drop-in deleted, and `sshd` disabled.
 
-Disable `sshd` by changing the administrator's own assignment rather
-than appending one. That matters: the engine writes its `sshd=YES` into
-a marked block at the end of `rc.conf`, and `rc.conf` is last-wins, so
-an assignment appended *after* that block would outrank the repair and
-the engine would correctly report a conflict instead of fixing it.
-Editing the existing line is also what an administrator would actually
-do.
+`sshd` was disabled by changing the administrator's own assignment
+rather than appending one. That matters: the engine writes its
+`sshd=YES` into a marked block, `rc.conf` is last-wins, and
+`adapter_service_enable` *extends the existing block where it already
+sits* rather than moving it to the end — so an assignment appended
+*after* that block would outrank the repair, and the engine would
+correctly report a conflict instead of fixing it. Editing the existing
+line is also what an administrator would actually do.
 
 ```sh
-sed 's/^sshd=YES$/sshd=NO/' /etc/rc.conf > /tmp/rc.new
-cp /tmp/rc.new /etc/rc.conf && rm /tmp/rc.new
+awk '/^# BEGIN ansible-bootstrap/ { inblock = 1 }
+     !inblock && /^sshd=YES/      { print "sshd=NO"; next }
+     { print }' /etc/rc.conf > /tmp/rc.new
+/bin/sh -n /tmp/rc.new && cp /tmp/rc.new /etc/rc.conf && rm /tmp/rc.new
 service -e sshd && echo STILL-ENABLED || echo disabled
 reboot
 ```
 
 `sed -i` is avoided deliberately — its argument handling differs across
-the BSDs, and this is a file that breaks boot if mangled.
+the BSDs, and this is a file that breaks boot if mangled. The `awk`
+guard stops the substitution at the managed block, so the engine's own
+`sshd=YES` is never flipped.
 
-Expect **two** changes in the log, `Enabling sshd` then `Starting
-sshd`, the console showing both announce lines, and the host reachable
-from the controller afterwards. `rc` skips the disabled `sshd` but
-`rcorder` still places the hook after it, so the hook runs and repairs
-both facts.
+The boot repaired both faults unattended, in **three** changes:
+
+```text
+ansible-bootstrap: --- 2026-10-03T06:25:59Z apply ---
+ansible-bootstrap: change: Configuring passwordless sudo
+ansible-bootstrap: change: Enabling sshd
+ansible-bootstrap: change: Starting sshd
+ansible-bootstrap: escalation: OK (ansible_become_method=sudo)
+ansible-bootstrap: sshd: OK
+ansible-bootstrap: System is Ansible-ready; 3 changes made
+```
+
+`rc` skips the disabled `sshd`, but `rcorder` still placed the hook at
+position 133, after `LOGIN` (110) and `sshd` (112), so the hook ran and
+repaired both facts. The host was reachable from the controller
+afterwards — which is itself the proof, since `sshd` had been disabled
+for boot. Afterwards `rc.conf` read:
+
+```text
+25:sshd=NO                      # administrator's own
+28:sshd=NO                      # the injected fault
+31:# BEGIN ansible-bootstrap
+32:ansible_bootstrap=YES
+33:sshd=YES                     # the repair, after both, so it wins
+34:# END ansible-bootstrap
+```
+
+One block, extended — not a second one appended.
+
+A **second reboot with no drift made no changes at all**, which is the
+other half of the property: the log carried two `apply` runs and three
+changes in total, all of them from the repair boot.
 
 If SSH is dead afterwards, the hook did not run when a service it
 `REQUIRE`s was skipped — which would be a genuine ordering bug and
 worth knowing. Recover with `service ansible_bootstrap onestart`.
 
-### A boot with the package repository unreachable
+### A boot with the package repository unreachable — done
 
-The only path that exercises `run_bounded`'s timeout for real. A
-misconfigured repository fails fast and does not test the bound, so
+The only path that exercises `run_bounded`'s timeout for real, and the
+one that matters most: this is the code that once ran for **617
+seconds under a 15-second bound** on FreeBSD.
+
+A misconfigured repository fails fast and does not test the bound, so
 `ftp` has to be made to hang — the adapter fetches the package index
-with it, and the engine's `PATH` starts with `/sbin`:
+with it, and the engine's `PATH` starts with `/sbin` while the real
+`ftp` is `/usr/bin/ftp`:
 
 ```sh
 sed 's/^PKG_TIMEOUT=300$/PKG_TIMEOUT=15/' /usr/local/libexec/ansible-bootstrap > /tmp/e
@@ -313,11 +391,51 @@ chmod +x /sbin/ftp
 reboot
 ```
 
-Expect the console to show `FAILED`, the log to carry `Exceeded 15s;
-terminating: ftp -o - …` followed by `Could not query the package
-repository within 15s`, **boot to complete normally**, and SSH to still
-work — only Python is broken. That last part is the whole purpose of
-bounding the operation.
+The console showed `FAILED`, boot completed normally, and SSH still
+worked. The log:
+
+```text
+ansible-bootstrap: No compatible Python interpreter is installed; querying packages
+ansible-bootstrap: Exceeded 15s; terminating: ftp -o - https://cdn.NetBSD.org/.../All/
+ansible-bootstrap: Could not query the package repository within 15s.
+ansible-bootstrap: Check network reachability and PKG_PATH.
+ansible-bootstrap: Boot continues; a later boot or a manual apply will retry.
+ansible-bootstrap: ERROR: No installable Python interpreter found
+```
+
+The bound fired at 15s against a command that would have run for 600,
+and the stall was ~17s — the bound plus the two-second `TERM` grace.
+**The other four invariants stayed OK**, because `apply_python` runs
+last in `apply_all`; only Python was broken. That is the whole purpose
+of bounding the operation. A later `apply` with the repository reachable
+reinstalled `python314` in one change.
+
+Worth noting for a `PKG_TIMEOUT` left at its default of 300: two bounded
+calls on this platform means a boot can stall for ten minutes before
+giving up. The bound works, but the default is generous for something
+that runs before a console login.
+
+#### The timeout path used to leak shell internals into the log
+
+Found by running the above. Between the engine's own two messages sat:
+
+```text
+[1]   Terminated   "${@}" </dev/null >"${bounded_out}"
+```
+
+NetBSD's `/bin/sh` announces the reaping of a signal-killed background
+job, naming `run_bounded`'s internals in the operator's log — the one
+log a human reads after an unattended boot-time failure. Measured on all
+three platforms with `run_bounded` lifted into a standalone script:
+OpenBSD and FreeBSD are silent, NetBSD is not.
+
+Fixed by discarding stderr across the whole terminate sequence, in a
+**brace group rather than a subshell**, because `wait` has to stay in
+the shell that owns the job. Nothing in that group diagnoses anything:
+the kills already tolerate failure and `sleep` says nothing. Re-measured
+afterwards — all three still return 124 after the bound and 0 for a
+command that finishes, and the log is seven lines of engine output with
+no shell noise.
 
 Clean up promptly; `/sbin/ftp` shadows `ftp` for everything:
 

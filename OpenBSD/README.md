@@ -31,16 +31,26 @@ Ansible.
 > which is what distinguishes a working `adapter_service_enabled` from a
 > broken one. `adapter_create_account` has since been exercised too, by
 > deleting the account and reconciling: `check` reported `account`,
-> `authorized_key` and `doas` all NOT READY — `doas` because its check
-> runs `su ansible`, which cannot work without the account — and `apply`
-> recreated all three. The account returned with a different uid, which
+> `authorized_key` and `escalation` all NOT READY — escalation because
+> its check runs `su ansible`, which cannot work without the account —
+> and `apply` recreated all three. The account returned with a different uid, which
 > incidentally confirmed that reading uid and gid from the `passwd` entry
 > rather than hardcoding them was the right call.
 >
-> Not yet exercised: a boot with the package mirror **unreachable**,
-> and any release other than 7.9. Treat it as a working prototype
-> rather than a tested release, and see the checklist at the end for
-> the assumptions that remain unconfirmed.
+> The boot hook has since been re-validated on a pristine 7.9 guest
+> after the escalation change, with the managed `doas` block deleted
+> *and* `sshd` disabled: one boot repaired both unattended in three
+> changes, and a second with no drift made none.
+>
+> [A boot with the package mirror
+> **unreachable**](#a-boot-with-the-package-mirror-unreachable--done)
+> has since been run too: the bound fired at 15s against a command that
+> would have run for 600, boot completed, SSH kept working, and only
+> Python was left broken.
+>
+> Not yet exercised: any release other than 7.9. Treat this as a working
+> prototype rather than a tested release, and see the checklist at the
+> end for the assumptions that remain unconfirmed.
 
 ## Readiness contract
 
@@ -287,7 +297,7 @@ fails immediately instead of hanging. Setting
 
 On success the installer prints the `rc.local` snippet it *would*
 have added and stops. Work through "Manual validation" below —
-especially the controller-side SSH, `doas`, and Ansible tests, which
+especially the controller-side SSH, escalation, and Ansible tests, which
 no local check can substitute for — and only then enable unattended
 reconciliation:
 
@@ -433,9 +443,17 @@ reporting a fault that `apply` has no safe way to repair. The
 guarantee is narrower and more useful — this service never creates a
 duplicate.
 
-**`doas`:** OpenBSD includes `doas` in the base system. The intended
-managed policy is `permit nopass ansible as root`, but the effective
-result depends on the full rule ordering. Check it by executing a
+**`doas`:** OpenBSD includes `doas` in the base system, which is why it
+is the one platform that defaults to it; FreeBSD and NetBSD, where
+neither tool is in base, default to `sudo`. The engine holds a policy
+writer for each style and selects on the adapter's `ESCALATION_STYLE`,
+so everything in this section describes the doas style specifically —
+see
+[the repository README](../README.md#which-escalation-tool-and-why-it-differs-per-platform)
+for the comparison.
+
+The intended managed policy is `permit nopass ansible as root`, but the
+effective result depends on the full rule ordering. Check it by executing a
 harmless noninteractive command *as the Ansible account*; `doas -C` by
 itself is not a substitute for this test. Changes to `/etc/doas.conf`
 must preserve unrelated policy and be validated before atomic
@@ -616,8 +634,9 @@ mechanism.
 
 `../lib/controller-test.sh` runs the checks the engine cannot perform on
 itself — a real SSH login, a real Ansible module run, `become` through
-the doas plugin. It is shared between platforms and executed **from the
-Ansible controller**, so it is described in the
+the target's become plugin, which it selects from the target's
+`uname -s` (`community.general.doas` here). It is shared between
+platforms and executed **from the Ansible controller**, so it is described in the
 [repository README](../README.md#controller-side-tests) rather than
 duplicated here.
 
@@ -666,6 +685,77 @@ ssh -i ~/.ssh/ansible_ed25519 -o IdentitiesOnly=yes \
 Substitute the interpreter path that `check` reported for `PYTHON`.
 For Ansible inventory, use that verified path rather than assuming an
 unversioned `python3` symlink exists.
+
+### A boot with the package mirror unreachable — done
+
+Step 8's package half, run at a real boot rather than from a hand-run
+`apply`. A misconfigured mirror fails fast and does not test the bound,
+so the query tool has to be made to hang. The engine's `PATH` starts
+with `/sbin` while the real `pkg_info` is `/usr/sbin/pkg_info`, so a
+file placed in `/sbin` shadows it:
+
+```sh
+sed 's/^PKG_TIMEOUT=300$/PKG_TIMEOUT=15/' /usr/local/libexec/ansible-bootstrap > /tmp/e
+cp /tmp/e /usr/local/libexec/ansible-bootstrap && rm /tmp/e
+pkg_delete python-3.13.13                 # so apply must reach the mirror
+printf '#!/bin/sh\nsleep 600\n' > /sbin/pkg_info
+chmod +x /sbin/pkg_info
+reboot
+```
+
+The console showed `FAILED`, boot completed normally, and SSH still
+worked. The log:
+
+```text
+ansible-bootstrap: No compatible Python interpreter is installed; querying packages
+ansible-bootstrap: Exceeded 15s; terminating: pkg_info -Q python
+ansible-bootstrap: Could not query the package repository within 15s.
+ansible-bootstrap: Check network reachability and PKG_PATH.
+ansible-bootstrap: Boot continues; a later boot or a manual apply will retry.
+ansible-bootstrap: ERROR: No installable Python interpreter found
+```
+
+The bound fired at 15s against a command that would have run for 600,
+and **the other four invariants stayed OK** — only Python was broken,
+because `apply_python` runs last in `apply_all`. Removing the shadow and
+running `apply` reinstalled `python-3.13.13` in one change, in 88
+seconds.
+
+This platform makes **one** bounded call on the Python path, where
+FreeBSD makes two. At the default `PKG_TIMEOUT=300` that is up to five
+minutes of boot delay here against ten there, before the host gives up
+and carries on. The bound works; the default is generous for something
+that runs before a console login.
+
+Clean up promptly; `/sbin/pkg_info` shadows `pkg_info` for everything:
+
+```sh
+rm -f /sbin/pkg_info
+```
+
+#### A `Terminated` line that is the test's fault, not the engine's
+
+Worth knowing before it misleads someone. The run above logged an extra
+line between the engine's own two:
+
+```text
+ansible-bootstrap: Exceeded 15s; terminating: pkg_info -Q python
+Terminated
+```
+
+That is **not** the engine. OpenBSD's `/bin/sh` reports a foreground
+child killed by a signal, and the shadow above is a *shell script* whose
+`sleep` was killed — so the message comes from the fake, not from
+`run_bounded`. Isolated by bounding three different shapes of command:
+it appears for a shell script and for `sh -c`, and never for a bare
+binary. No real bounded command here is a shell script — `pkg_info` and
+`pkg_add` are both Perl — so it cannot occur in production on this
+platform.
+
+NetBSD had a *genuine* version of this, which is a different thing: its
+message named `run_bounded`'s own internal variables, which only the
+engine's shell knows. That one was a real defect and is fixed; see
+[NetBSD/README.md](../NetBSD/README.md#the-timeout-path-used-to-leak-shell-internals-into-the-log).
 
 ## Known prototype gaps / implementation checklist
 

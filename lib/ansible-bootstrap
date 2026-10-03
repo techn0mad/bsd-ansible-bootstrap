@@ -38,12 +38,27 @@ KEY_FILE=$CONFIG_DIR/controller.pub
 # configuration file.
 ADAPTER=/usr/local/libexec/ansible-bootstrap-adapter
 
+# Markers for the managed block in doas.conf. Only the doas style uses
+# them: a sudoers drop-in is a whole file this service owns, so there is
+# nothing to mark off inside somebody else's file.
 DOAS_BEGIN='# BEGIN ansible-bootstrap'
 DOAS_END='# END ansible-bootstrap'
 
 # The v0.2 marker, recognized so an upgrade does not append a second
 # copy of the rule.
 DOAS_LEGACY='# Managed by ansible-bootstrap'
+
+# Mode for a sudoers drop-in. sudo ignores a policy file that is
+# writable by group or other, and one owned by a non-root uid, so both
+# are part of whether the rule takes effect at all rather than hygiene:
+#
+#   sudo: /usr/pkg/etc/sudoers.d/ansible-bootstrap is owned by uid 1001,
+#         should be 0
+#
+# The same mode twice, in the two notations needed -- chmod's and the
+# one `ls -l` prints -- kept adjacent because they must agree.
+SUDOERS_MODE=0440
+SUDOERS_MODE_LS='-r--r-----'
 
 # Managed-node interpreter requirements of the ansible-core release
 # the controller runs. Set here for ansible-core 2.21, which supports
@@ -169,6 +184,31 @@ load_adapter()
         die_config "$ADAPTER must exist, owned by root:wheel, mode 0700"
 
     . "$ADAPTER"
+
+    # An adapter that sets no escalation style, or one this engine does
+    # not implement, would otherwise fall through every case below and
+    # configure no escalation at all -- reporting a host as ready that
+    # Ansible cannot actually use. Checked here, once, rather than
+    # defended against at each use.
+    case "${ESCALATION_STYLE:-}" in
+        doas | sudo)
+            ;;
+        '')
+            die_config "$ADAPTER sets no ESCALATION_STYLE"
+            ;;
+        *)
+            die_config "$ADAPTER sets an unknown ESCALATION_STYLE:" \
+                "$ESCALATION_STYLE"
+            ;;
+    esac
+
+    for adapter_const in LOGIN_SHELL ESCALATION_BIN ESCALATION_CONF \
+        ESCALATION_POLICY ESCALATION_VALIDATE; do
+        eval "adapter_value=\${$adapter_const:-}"
+
+        [ -n "$adapter_value" ] ||
+            die_config "$ADAPTER sets no $adapter_const"
+    done
 }
 
 # Signal a process and everything beneath it, deepest first.
@@ -233,11 +273,28 @@ run_bounded()
     if kill -0 "$bounded_pid" 2>/dev/null; then
         log "Exceeded ${limit}s; terminating: $*"
 
-        kill_tree "$bounded_pid" TERM
-        sleep 2
-        kill_tree "$bounded_pid" KILL
+        # A brace group, not a subshell: `wait` has to stay in the shell
+        # that owns the job. stderr is discarded across the whole
+        # sequence because NetBSD's sh announces the reaping of a
+        # signal-killed background job, naming this function's own
+        # internals in the operator's log:
+        #
+        #   [1]   Terminated   "${@}" </dev/null >"${bounded_out}"
+        #
+        # It appears on the timeout path only, which is exactly the log
+        # a human reads after an unattended boot-time failure. OpenBSD
+        # and FreeBSD are silent here; measured on all three.
+        #
+        # Nothing in the group diagnoses anything: the kills already
+        # tolerate failure and sleep says nothing.
+        {
+            kill_tree "$bounded_pid" TERM
+            sleep 2
+            kill_tree "$bounded_pid" KILL
 
-        wait "$bounded_pid" 2>/dev/null
+            wait "$bounded_pid"
+        } 2>/dev/null
+
         bounded_status=124
     else
         wait "$bounded_pid" || bounded_status=$?
@@ -545,46 +602,91 @@ apply_authorized_key()
         die "authorized_keys verification failed"
 }
 
-# Test the effective doas policy as the ansible user.
+# The become_method the controller must use for the mechanism in
+# effect. Reported by `check` for the same reason the Python
+# interpreter path is: it is a setting the controller cannot derive and
+# has to be told.
+#
+# doas is not in ansible-core; its become plugin comes from the
+# community.general collection, so the name is fully qualified. sudo is
+# built in.
+become_method()
+{
+    case "$ESCALATION_STYLE" in
+        doas) echo community.general.doas ;;
+        sudo) echo sudo ;;
+    esac
+}
+
+# The rule granting the account passwordless root, as the mechanism in
+# effect spells it. One function so that the text written by `apply` and
+# the text compared against by the drift check cannot drift apart.
+escalation_rule()
+{
+    case "$ESCALATION_STYLE" in
+        doas) printf 'permit nopass %s as root\n' "$ACCOUNT" ;;
+        sudo) printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$ACCOUNT" ;;
+    esac
+}
+
+# Test the effective escalation policy as the ansible user.
+#
+# Shared between mechanisms: doas and sudo both take -n to mean "fail
+# rather than prompt", which is exactly the question being asked. What
+# differs is only the path, which the adapter supplies.
 #
 # Deliberately NOT a login shell: `su -` would source /etc/profile and
 # ~/.profile, whose output would be captured along with the command's
-# and break the comparison below on a host where doas works fine. A
-# non-login shell is also the more faithful test, because Ansible runs
+# and break the comparison below on a host where escalation works fine.
+# A non-login shell is also the more faithful test, because Ansible runs
 # `ssh host command`, which is not a login shell either. Nothing here
-# needs the login environment — doas and id are invoked by absolute
-# path.
+# needs the login environment -- the escalation tool and id are invoked
+# by absolute path.
 #
 # The whole output must be exactly "0". Matching loosely, to tolerate
 # stray output, would risk reading a bare 0 printed by something else
 # as proof of success; failing on unexpected output is the safer
 # direction.
-check_doas()
+#
+# Note what is NOT tested: whether this service wrote the policy. The
+# contract is that the account can reach root noninteractively, not that
+# this program is the reason. An administrator who granted it in
+# sudoers directly has satisfied the invariant, and `apply` then returns
+# without writing a drop-in rather than adding a second grant. Requiring
+# ESCALATION_CONF to exist here would have reported such a host as not
+# ready and then refused to "fix" it.
+check_escalation()
 {
-    [ -f "$DOAS_CONF" ] || return 1
-
     result=$(su "$ACCOUNT" -c \
-        "$DOAS_BIN -n /usr/bin/id -u" 2>/dev/null) ||
+        "$ESCALATION_BIN -n /usr/bin/id -u" 2>/dev/null) ||
         return 1
 
     [ "$result" = 0 ]
 }
 
-# True when a previous run already wrote the managed rule.
+# True when a previous run already wrote the managed block. doas only:
+# the sudo style owns its file outright and compares content instead.
 managed_doas_rule()
 {
-    [ -f "$DOAS_CONF" ] || return 1
+    [ -f "$ESCALATION_CONF" ] || return 1
 
-    grep -Fqx "$DOAS_BEGIN" "$DOAS_CONF" ||
-        grep -Fqx "$DOAS_LEGACY" "$DOAS_CONF"
+    grep -Fqx "$DOAS_BEGIN" "$ESCALATION_CONF" ||
+        grep -Fqx "$DOAS_LEGACY" "$ESCALATION_CONF"
 }
 
 # True when any rule the administrator wrote names the account.
-# Appending a permit rule after such a rule would silently override a
-# deliberate policy decision.
-administrator_doas_rule()
+#
+# Read from ESCALATION_POLICY, the administrator's file, which is not
+# always the file this service writes: under the sudo style policy lives
+# in sudoers and this service owns only a drop-in. Scanned either way,
+# because both mechanisms resolve last match wins, and this service's
+# rule is evaluated last -- doas.conf because the managed block is
+# appended, sudoers because @includedir is the final effective line of
+# the shipped file. Granting itself root after such a rule would
+# silently override a deliberate policy decision.
+administrator_escalation_rule()
 {
-    [ -f "$DOAS_CONF" ] || return 1
+    [ -f "$ESCALATION_POLICY" ] || return 1
 
     awk -v account="$ACCOUNT" '
         /^[ \t]*#/ { next }
@@ -595,71 +697,173 @@ administrator_doas_rule()
                     found = 1
         }
         END { exit !found }
-    ' "$DOAS_CONF"
+    ' "$ESCALATION_POLICY"
 }
 
-apply_doas()
+refuse_administrator_policy()
 {
-    check_doas && return 0
+    administrator_escalation_rule || return 0
 
-    # doas is in the base system on OpenBSD but a package on FreeBSD,
-    # so on some platforms escalation cannot be configured until the
-    # package manager has worked. That inverts part of the ordering
-    # this function can otherwise assume.
-    adapter_escalation_prepare
+    log "$ESCALATION_POLICY already has a rule naming $ACCOUNT that does"
+    log "not permit passwordless root access."
+    die "Refusing to override administrator $ESCALATION_STYLE policy"
+}
 
-    # The rule is already installed but is not effective. Appending
+# Validate a candidate policy file with the mechanism's own parser, and
+# remove it if it does not pass.
+#
+# Unquoted on purpose: ESCALATION_VALIDATE is a command and its
+# arguments -- `doas -C`, `visudo -c -f` -- and word splitting is how a
+# POSIX shell passes those on.
+validate_escalation_file()
+{
+    $ESCALATION_VALIDATE "$1" >/dev/null 2>&1 && return 0
+
+    rm -f "$1"
+    die "Generated $ESCALATION_STYLE configuration is invalid"
+}
+
+install_escalation_file()
+{
+    mv "$1" "$ESCALATION_CONF" || {
+        rm -f "$1"
+        die "Cannot install $ESCALATION_CONF"
+    }
+}
+
+# Append a managed block to doas.conf -- a file belonging to the
+# administrator, so unrelated content is preserved and only the block
+# between the markers is this service's to write.
+apply_escalation_doas()
+{
+    # The block is already installed but is not effective. Appending
     # another copy would not change the outcome and would grow
     # doas.conf by two lines on every boot.
+    #
+    # Checked before the administrator scan below, not after: that scan
+    # matches any uncommented line naming the account, which includes
+    # this service's own rule.
     if managed_doas_rule; then
-        log "$DOAS_CONF already contains the managed rule for $ACCOUNT,"
-        log "but doas -n still fails. A later rule may override it, or"
-        log "the account may be locked or otherwise unusable."
+        log "$ESCALATION_CONF already contains the managed rule for"
+        log "$ACCOUNT, but doas -n still fails. A later rule may override"
+        log "it, or the account may be locked or otherwise unusable."
         die "Refusing to append a duplicate doas rule; resolve this by hand"
     fi
 
-    # An existing rule naming the account is a deliberate
-    # administrative decision; report the conflict, do not outrank it.
-    if administrator_doas_rule; then
-        log "$DOAS_CONF already has a rule naming $ACCOUNT that does not"
-        log "permit passwordless root access."
-        die "Refusing to override administrator doas policy"
-    fi
+    refuse_administrator_policy
 
     changed "Configuring passwordless doas"
 
-    [ ! -L "$DOAS_CONF" ] ||
+    [ ! -L "$ESCALATION_CONF" ] ||
         die "Refusing symlinked doas.conf"
 
-    doas_tmp=$(mktemp "$DOAS_CONF.XXXXXXXX") ||
+    doas_tmp=$(mktemp "$ESCALATION_CONF.XXXXXXXX") ||
         die "Cannot create temporary doas configuration"
 
-    if [ -f "$DOAS_CONF" ]; then
-        cat "$DOAS_CONF" > "$doas_tmp"
+    if [ -f "$ESCALATION_CONF" ]; then
+        cat "$ESCALATION_CONF" > "$doas_tmp"
     fi
 
     # Last matching rule wins in doas.conf, so the managed block goes
     # at the end. The markers let later runs recognize it.
     {
         printf '\n%s\n' "$DOAS_BEGIN"
-        printf 'permit nopass %s as root\n' "$ACCOUNT"
+        escalation_rule
         printf '%s\n' "$DOAS_END"
     } >> "$doas_tmp"
 
     chmod 0600 "$doas_tmp"
     chown root:wheel "$doas_tmp"
 
-    if ! "$DOAS_BIN" -C "$doas_tmp" >/dev/null 2>&1; then
-        rm -f "$doas_tmp"
-        die "Generated doas configuration is invalid"
+    validate_escalation_file "$doas_tmp"
+    install_escalation_file "$doas_tmp"
+}
+
+# True when the drop-in is already exactly what this service would
+# write, in content, ownership and mode.
+#
+# The sudo style has no marker to look for, because it does not write
+# into anybody else's file -- which also means the file merely existing
+# is no evidence that it is right, the way a marker is. Comparing
+# content instead buys back drift repair: a truncated, re-owned or
+# chmodded drop-in is rewritten, and only a drop-in that is already
+# correct while escalation still fails is treated as a conflict.
+sudoers_dropin_correct()
+{
+    [ -f "$ESCALATION_CONF" ] || return 1
+    [ ! -L "$ESCALATION_CONF" ] || return 1
+
+    expect_path "$ESCALATION_CONF" "$SUDOERS_MODE_LS 0 0" || return 1
+
+    [ "$(cat "$ESCALATION_CONF")" = "$(escalation_rule)" ]
+}
+
+# Write a sudoers drop-in: a whole file this service owns, so the
+# correct content can simply be written rather than edited into place.
+apply_escalation_sudo()
+{
+    if sudoers_dropin_correct; then
+        log "$ESCALATION_CONF already grants $ACCOUNT passwordless root,"
+        log "but sudo -n still fails. A rule later in $ESCALATION_POLICY"
+        log "may override it, the @includedir line may be missing, or the"
+        log "account may be locked or otherwise unusable."
+        die "Refusing to rewrite a correct sudoers drop-in; resolve by hand"
     fi
 
-    mv "$doas_tmp" "$DOAS_CONF" || {
-        rm -f "$doas_tmp"
-        die "Cannot install $DOAS_CONF"
-    }
+    refuse_administrator_policy
 
-    check_doas || die "Effective doas policy verification failed"
+    changed "Configuring passwordless sudo"
+
+    [ ! -L "$ESCALATION_CONF" ] ||
+        die "Refusing symlinked $ESCALATION_CONF"
+
+    # Measured present after installing the sudo package on both
+    # FreeBSD 15.1 and NetBSD 11.0 -- but the doas package on NetBSD
+    # ships no PKG_SYSCONFDIR at all, and the failure mode there was a
+    # mktemp ENOENT that said nothing about the real cause. Creating it
+    # costs one stat.
+    sudoers_dir=${ESCALATION_CONF%/*}
+
+    if [ ! -d "$sudoers_dir" ]; then
+        changed "Creating $sudoers_dir for sudo policy"
+
+        install -d -o root -g wheel -m 0755 "$sudoers_dir" ||
+            die "Cannot create $sudoers_dir"
+    fi
+
+    # The temporary file is created inside the included directory, so
+    # sudo may parse it for as long as it exists. Harmless: its content
+    # is byte for byte what is about to be installed under the real
+    # name, and it is validated before the rename.
+    sudoers_tmp=$(mktemp "$ESCALATION_CONF.XXXXXXXX") ||
+        die "Cannot create temporary sudoers drop-in"
+
+    escalation_rule > "$sudoers_tmp"
+
+    chown root:wheel "$sudoers_tmp"
+    chmod "$SUDOERS_MODE" "$sudoers_tmp"
+
+    validate_escalation_file "$sudoers_tmp"
+    install_escalation_file "$sudoers_tmp"
+}
+
+apply_escalation()
+{
+    check_escalation && return 0
+
+    # doas is in the base system on OpenBSD but both doas and sudo are
+    # packages elsewhere, so on some platforms escalation cannot be
+    # configured until the package manager has worked. That inverts part
+    # of the ordering this function can otherwise assume.
+    adapter_escalation_prepare
+
+    case "$ESCALATION_STYLE" in
+        doas) apply_escalation_doas ;;
+        sudo) apply_escalation_sudo ;;
+    esac
+
+    check_escalation ||
+        die "Effective $ESCALATION_STYLE policy verification failed"
 }
 
 check_sshd()
@@ -853,9 +1057,19 @@ check_all()
         failed=1
     fi
 
-    for item in account authorized_key doas sshd; do
+    for item in account authorized_key escalation sshd; do
         if "check_$item"; then
-            log "$item: OK"
+            # Reported rather than merely confirmed, like the Python
+            # path below: which become_method to use is the other
+            # setting the controller cannot derive for itself.
+            case "$item" in
+                escalation)
+                    log "escalation: OK (ansible_become_method=$(become_method))"
+                    ;;
+                *)
+                    log "$item: OK"
+                    ;;
+            esac
         else
             log "$item: NOT READY"
             failed=1
@@ -879,7 +1093,7 @@ apply_all()
     apply_key_source
     apply_account
     apply_authorized_key
-    apply_doas
+    apply_escalation
     apply_sshd
     apply_python
 

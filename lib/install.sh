@@ -192,8 +192,10 @@ install: the boot hook was NOT installed.
 Validate this host before enabling unattended reconciliation; see the
 "Manual validation" section of README.md. At minimum, confirm from the
 Ansible controller that SSH login as 'ansible' works with the intended
-key, that 'doas -n id -u' returns 0, and that an Ansible ping succeeds
-using the absolute path of the installed Python interpreter.
+key, that privilege escalation is effective for that account, and that
+an Ansible ping succeeds using the absolute path of the installed Python
+interpreter. The 'check' output above names both the become method and
+the interpreter path to use; lib/controller-test.sh runs all of it.
 
 Then enable reconciliation on every boot with:
 

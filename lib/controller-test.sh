@@ -13,9 +13,10 @@
 # Ansible.
 #
 # Shared between platforms — nothing in it is OS-specific. The become
-# method and the interpreter path are options rather than constants, and
-# the one path it assumes on the target, the engine's own location, is
-# the same on OpenBSD and FreeBSD.
+# method is detected from the target's OS, because the default
+# escalation mechanism depends on it; the interpreter path is an option
+# rather than a constant; and the one path it assumes on the target, the
+# engine's own location, is the same on all three platforms.
 #
 # Read-only by default. -a additionally runs `apply` on the target twice
 # to confirm reconciliation is idempotent, which does modify the host.
@@ -25,7 +26,9 @@ set -eu
 
 USER_NAME=ansible
 IDENTITY=$HOME/.ssh/id_ed25519
-BECOME_METHOD=community.general.doas
+# Empty means "detect from the target's OS after logging in"; -m
+# overrides it.
+BECOME_METHOD=
 INTERPRETER=
 TIMEOUT=10
 RUN_APPLY=no
@@ -42,7 +45,8 @@ Usage: ${0##*/} [options] host
   -i identity     SSH private key (default: $IDENTITY)
   -p interpreter  absolute path to force as ansible_python_interpreter;
                   omit to let Ansible discover it and report what it found
-  -m method       become method (default: $BECOME_METHOD)
+  -m method       become method; default is detected from the target OS
+                  (community.general.doas on OpenBSD, sudo elsewhere)
   -t seconds      SSH connect timeout (default: $TIMEOUT)
   -a              also run 'apply' on the target twice to check
                   idempotency; this MODIFIES the host
@@ -136,12 +140,6 @@ else
     fail "ansible is installed but will not run; check its interpreter"
 fi
 
-if ansible-doc -t become "$BECOME_METHOD" >/dev/null 2>&1; then
-    pass "become plugin available: $BECOME_METHOD"
-else
-    fail "become plugin missing: $BECOME_METHOD (install community.general)"
-fi
-
 info ""
 info "ssh"
 
@@ -177,15 +175,67 @@ else
     fail "authorized_keys does not contain $local_fp"
 fi
 
-if escalation=$(remote 'doas -n id -u' 2>/dev/null); then
-    if [ "$escalation" = 0 ]; then
-        pass "doas -n id -u returns 0"
-    else
-        fail "doas -n id -u returned '$escalation', expected 0"
-    fi
+info ""
+info "escalation"
+
+# The become method follows from the target's OS, because the default
+# escalation mechanism does: doas on OpenBSD, where it is in the base
+# system, and sudo on the platforms where neither tool is. Detected
+# rather than assumed, so one invocation works against any supported
+# host.
+#
+# This has to come after the login above, which is why the become
+# plugin is checked here rather than in the preflight section.
+target_os=$(remote 'uname -s' 2>/dev/null) || target_os=
+
+if [ -n "$BECOME_METHOD" ]; then
+    info "        target $target_os; become method $BECOME_METHOD (given)"
 else
-    fail "doas -n failed; passwordless escalation is not effective"
+    case "$target_os" in
+        OpenBSD)
+            BECOME_METHOD=community.general.doas
+            ;;
+        FreeBSD | NetBSD)
+            BECOME_METHOD=sudo
+            ;;
+        *)
+            die "No become method known for target OS '$target_os'; pass -m"
+            ;;
+    esac
+
+    info "        target $target_os; become method $BECOME_METHOD (detected)"
 fi
+
+if ansible-doc -t become "$BECOME_METHOD" >/dev/null 2>&1; then
+    pass "become plugin available: $BECOME_METHOD"
+else
+    fail "become plugin missing: $BECOME_METHOD (install community.general)"
+fi
+
+# The tool itself, for a direct probe that does not involve Ansible at
+# all. The last dot-separated component of a become method name is the
+# tool: community.general.doas -> doas, sudo -> sudo. Both take -n to
+# mean "fail rather than prompt".
+escalation_tool=${BECOME_METHOD##*.}
+
+case "$escalation_tool" in
+    doas | sudo)
+        if escalation=$(remote "$escalation_tool -n id -u" 2>/dev/null); then
+            if [ "$escalation" = 0 ]; then
+                pass "$escalation_tool -n id -u returns 0"
+            else
+                fail "$escalation_tool -n id -u returned '$escalation'," \
+                    "expected 0"
+            fi
+        else
+            fail "$escalation_tool -n failed; passwordless escalation is" \
+                "not effective"
+        fi
+        ;;
+    *)
+        skip "direct -n probe (not meaningful for $escalation_tool)"
+        ;;
+esac
 
 info ""
 info "ansible"
