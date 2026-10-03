@@ -17,6 +17,14 @@
 > [the FreeBSD README](../FreeBSD/README.md#escalation-fault-injection)
 > all behaved identically here.
 >
+> A **pristine** 11.0 guest was then installed from scratch on the
+> `sudo` default, and the longest-outstanding validation on this
+> platform — [drift repaired unattended at
+> boot](#drift-repaired-unattended-at-boot--done) — was finally run,
+> with the drop-in deleted *and* the administrator's `sshd=YES` flipped.
+> One boot repaired both in three changes; a second with no drift made
+> none.
+>
 > `lib/controller-test.sh -a` then passed 10/10 against that host,
 > unmodified — the same script the other two platforms use. The
 > `rc.conf` marked block, this platform's most distinctive mechanism,
@@ -289,49 +297,81 @@ pre-release and no free-threaded variants, so `PYTHON_MAX=3.14` selects
 
 The plan in the repository README applies unchanged. Done on an 11.0
 aarch64 guest: a pristine install reaching all five invariants,
-`adapter_escalation_prepare` installing `doas` from pkgsrc,
-`lib/controller-test.sh -a` at 10/10, the `rc.conf` marked block, the
-`rc.d` hook at boot, and every adapter function including
+`adapter_escalation_prepare` installing the escalation package from
+pkgsrc, `lib/controller-test.sh -a` at 10/10, the `rc.conf` marked
+block, the `rc.d` hook at boot, and every adapter function including
 `adapter_service_start`.
 
-Two remain. Both need the console, because both can leave the host
-unreachable if the repair they exercise does not work.
+### Drift repaired unattended at boot — done
 
-### Drift repaired unattended at boot
+Run on a pristine 11.0 guest with the hook installed, injecting **two**
+faults at once: the `sudoers.d` drop-in deleted, and `sshd` disabled.
 
-Disable `sshd` by changing the administrator's own assignment rather
-than appending one. That matters: the engine writes its `sshd=YES` into
-a marked block at the end of `rc.conf`, and `rc.conf` is last-wins, so
-an assignment appended *after* that block would outrank the repair and
-the engine would correctly report a conflict instead of fixing it.
-Editing the existing line is also what an administrator would actually
-do.
+`sshd` was disabled by changing the administrator's own assignment
+rather than appending one. That matters: the engine writes its
+`sshd=YES` into a marked block, `rc.conf` is last-wins, and
+`adapter_service_enable` *extends the existing block where it already
+sits* rather than moving it to the end — so an assignment appended
+*after* that block would outrank the repair, and the engine would
+correctly report a conflict instead of fixing it. Editing the existing
+line is also what an administrator would actually do.
 
 ```sh
-sed 's/^sshd=YES$/sshd=NO/' /etc/rc.conf > /tmp/rc.new
-cp /tmp/rc.new /etc/rc.conf && rm /tmp/rc.new
+awk '/^# BEGIN ansible-bootstrap/ { inblock = 1 }
+     !inblock && /^sshd=YES/      { print "sshd=NO"; next }
+     { print }' /etc/rc.conf > /tmp/rc.new
+/bin/sh -n /tmp/rc.new && cp /tmp/rc.new /etc/rc.conf && rm /tmp/rc.new
 service -e sshd && echo STILL-ENABLED || echo disabled
 reboot
 ```
 
 `sed -i` is avoided deliberately — its argument handling differs across
-the BSDs, and this is a file that breaks boot if mangled.
+the BSDs, and this is a file that breaks boot if mangled. The `awk`
+guard stops the substitution at the managed block, so the engine's own
+`sshd=YES` is never flipped.
 
-Expect **two** changes in the log, `Enabling sshd` then `Starting
-sshd`, the console showing both announce lines, and the host reachable
-from the controller afterwards. `rc` skips the disabled `sshd` but
-`rcorder` still places the hook after it, so the hook runs and repairs
-both facts.
+The boot repaired both faults unattended, in **three** changes:
+
+```text
+ansible-bootstrap: --- 2026-10-03T06:25:59Z apply ---
+ansible-bootstrap: change: Configuring passwordless sudo
+ansible-bootstrap: change: Enabling sshd
+ansible-bootstrap: change: Starting sshd
+ansible-bootstrap: escalation: OK (ansible_become_method=sudo)
+ansible-bootstrap: sshd: OK
+ansible-bootstrap: System is Ansible-ready; 3 changes made
+```
+
+`rc` skips the disabled `sshd`, but `rcorder` still placed the hook at
+position 133, after `LOGIN` (110) and `sshd` (112), so the hook ran and
+repaired both facts. The host was reachable from the controller
+afterwards — which is itself the proof, since `sshd` had been disabled
+for boot. Afterwards `rc.conf` read:
+
+```text
+25:sshd=NO                      # administrator's own
+28:sshd=NO                      # the injected fault
+31:# BEGIN ansible-bootstrap
+32:ansible_bootstrap=YES
+33:sshd=YES                     # the repair, after both, so it wins
+34:# END ansible-bootstrap
+```
+
+One block, extended — not a second one appended.
+
+A **second reboot with no drift made no changes at all**, which is the
+other half of the property: the log carried two `apply` runs and three
+changes in total, all of them from the repair boot.
 
 If SSH is dead afterwards, the hook did not run when a service it
 `REQUIRE`s was skipped — which would be a genuine ordering bug and
 worth knowing. Recover with `service ansible_bootstrap onestart`.
 
-### A boot with the package repository unreachable
+### A boot with the package repository unreachable — still outstanding
 
-The only path that exercises `run_bounded`'s timeout for real. A
-misconfigured repository fails fast and does not test the bound, so
-`ftp` has to be made to hang — the adapter fetches the package index
+The one case not yet run, and the only path that exercises
+`run_bounded`'s timeout for real. A misconfigured repository fails fast
+and does not test the bound, so `ftp` has to be made to hang — the adapter fetches the package index
 with it, and the engine's `PATH` starts with `/sbin`:
 
 ```sh

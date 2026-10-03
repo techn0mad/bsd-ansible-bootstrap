@@ -27,6 +27,13 @@
 > cases](#escalation-fault-injection) against the new policy writer all
 > behaved correctly.
 >
+> A **pristine** 15.1 guest was then installed from scratch on the
+> `sudo` default — 8 changes, the same count the `doas` build took — and
+> the boot hook was validated against it: with the drop-in deleted *and*
+> `sshd_enable=NO`, one boot repaired both unattended in three changes,
+> and a second boot with no drift made none. `rcorder` placed the hook
+> at 170, behind `LOGIN` at 160 and `sshd` at 163.
+>
 > A reboot then exercised the `rc.d` hook and found a bug in its
 > `rcorder` placement — see *Boot integration* below. After the fix,
 > `rcorder` places the hook at 170, behind `LOGIN` at 160 and `sshd` at
