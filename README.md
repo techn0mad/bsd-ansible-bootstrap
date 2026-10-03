@@ -13,13 +13,16 @@ and exits. It is not a resident daemon or a replacement for Ansible.
 > and `sshd` disabled, repaired both in three changes, and a second boot
 > with no drift made none.
 >
+> A boot with the package repository **unreachable** has also been run
+> on all three: the bound fires, the console says `FAILED`, boot
+> completes, SSH keeps working, and only Python is left broken — then a
+> later `apply` repairs it. That case found a real defect on NetBSD,
+> where the shell was leaking `run_bounded`'s internals into the
+> operator's log.
+>
 > Each platform is still validated on a **single release** — 7.9, 15.1,
-> 11.0 — so treat it as a tested prototype rather than a release.
-> Two cases remain unexercised, both the same one: a boot with the
-> package repository **unreachable** on OpenBSD and on FreeBSD. NetBSD
-> has run it ([NetBSD/README.md](NetBSD/README.md)), where it found a
-> real defect, so it is worth running on the other two. Each platform's
-> README lists what remains unconfirmed there.
+> 11.0 — so treat it as a tested prototype rather than a release. Each
+> platform's README lists what remains unconfirmed there.
 
 ## Goals
 

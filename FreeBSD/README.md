@@ -65,13 +65,12 @@
 > a 15-second bound against a hung `pkg` cost 34 seconds rather than
 > 617, and left no orphaned process.
 >
-> Still unexercised: that happening unattended during boot rather than
-> from a hand-run `apply`. NetBSD has now run exactly that case, and it
-> found a real defect in the shared `run_bounded` — see
-> [NetBSD/README.md](../NetBSD/README.md#a-boot-with-the-package-repository-unreachable--done)
-> — so it is worth running here too. The repository-wide
-> [README](../README.md) defines the contract all three platforms must
-> satisfy.
+> That has since been exercised [unattended during
+> boot](#a-boot-with-the-package-repository-unreachable--done) rather
+> than from a hand-run `apply`, and cost the same 34 seconds — two
+> bounded calls, not one, which is this platform's distinguishing
+> number. The repository-wide [README](../README.md) defines the
+> contract all three platforms must satisfy.
 
 ## What this contains
 
@@ -314,6 +313,63 @@ disposable FreeBSD VM. Add one case that OpenBSD does not need:
 bootstrap the host with the privilege-escalation package absent *and*
 the package repository unreachable, and confirm the failure is
 bounded, diagnosable, and recoverable on a later boot.
+
+### A boot with the package repository unreachable — done
+
+The case this README listed as unexercised since the `run_bounded`
+repair: the bound firing *unattended during boot* rather than from a
+hand-run `apply`. A misconfigured repository fails fast and does not
+test the bound, so `pkg` has to be made to hang. The engine's `PATH`
+starts with `/sbin`, so a file there shadows both `/usr/sbin/pkg` (the
+bootstrap stub the engine actually resolves) and the real
+`/usr/local/sbin/pkg`:
+
+```sh
+sed 's/^PKG_TIMEOUT=300$/PKG_TIMEOUT=15/' /usr/local/libexec/ansible-bootstrap > /tmp/e
+cp /tmp/e /usr/local/libexec/ansible-bootstrap && rm /tmp/e
+pkg delete -y python314                   # so apply must reach the repository
+printf '#!/bin/sh\nsleep 600\n' > /sbin/pkg
+chmod +x /sbin/pkg
+reboot
+```
+
+The console showed `FAILED`, boot completed normally, and SSH still
+worked. The log:
+
+```text
+ansible-bootstrap: No compatible Python interpreter is installed; querying packages
+ansible-bootstrap: Exceeded 15s; terminating: pkg update
+ansible-bootstrap: Exceeded 15s; terminating: pkg rquery -g %n %v python3*
+ansible-bootstrap: Could not query the package repository within 15s.
+ansible-bootstrap: Check network reachability and PKG_PATH.
+ansible-bootstrap: Boot continues; a later boot or a manual apply will retry.
+ansible-bootstrap: ERROR: No installable Python interpreter found
+```
+
+**Two** bounded calls, not one: `adapter_python_packages` runs `pkg
+update` before `pkg rquery`, and the update's failure is deliberately
+tolerated. Total cost 34 seconds — the same figure the original
+`run_bounded` repair measured by hand, now reproduced at boot. **The
+other four invariants stayed OK**, because `apply_python` runs last in
+`apply_all`; only Python was broken. Removing the shadow and running
+`apply` reinstalled `python314` in one change, in 7 seconds.
+
+That two-call multiplier is the thing to know about the default. At
+`PKG_TIMEOUT=300` this platform can stall a boot for **ten minutes**
+before giving up, against five on OpenBSD, which makes one call. The
+bound works; the default is generous for something that runs before a
+console login.
+
+Clean up promptly; `/sbin/pkg` shadows `pkg` for everything:
+
+```sh
+rm -f /sbin/pkg
+```
+
+Unlike OpenBSD, nothing spurious appears in the log here: FreeBSD's
+`/bin/sh` stays silent about a signal-killed child even when the
+bounded command is a shell script. Measured, not assumed — see
+[the OpenBSD note](../OpenBSD/README.md#a-terminated-line-that-is-the-tests-fault-not-the-engines).
 
 ### Escalation fault injection
 
