@@ -15,10 +15,19 @@
 > `sshd: NOT READY`, `apply` wrote the block, and the result was still
 > valid shell.
 >
-> Seven of the eight adapter functions have run on hardware. Only
-> `adapter_service_start` has not, since that needs `sshd` stopped and
-> so console access. Not yet exercised either: the `rc.d` boot hook,
-> which the first install deliberately withheld.
+> A reboot then exercised the `rc.d` hook: `apply` ran at boot, repaired
+> nothing, logged one clean block, and the console showed the announce
+> lines. No spurious `Starting sshd`, so the `REQUIRE` ordering holds in
+> practice and not merely in `rcorder`'s output.
+>
+> All eight adapter functions have run on hardware.
+> `adapter_service_start` was exercised by stopping `sshd` while leaving
+> it enabled: `apply` logged one change, `Starting sshd` and not
+> `Enabling sshd`, which is what distinguishes a working
+> `adapter_service_enabled` from a broken one.
+>
+> Not yet exercised: drift repair unattended at boot rather than by
+> hand, and a boot with the package repository unreachable.
 >
 > The shared engine, installer and controller-side tests are byte-identical
 > to what [OpenBSD](../OpenBSD/README.md) and
