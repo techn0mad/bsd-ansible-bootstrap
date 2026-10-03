@@ -26,8 +26,8 @@ Install the rc.d script and enable it:
         $RC_SCRIPT_SRC $RC_SCRIPT
     sysrc $RC_VAR=YES
 
-The script runs '$ENGINE apply' once at boot, after NETWORKING, logging
-to $LOG_FILE. It is a short-lived task, not a daemon.
+The script runs '$ENGINE apply' once at boot, after NETWORKING, LOGIN
+and sshd, logging to $LOG_FILE. It is a short-lived task, not a daemon.
 EoF
 }
 
