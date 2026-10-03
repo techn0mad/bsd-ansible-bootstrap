@@ -158,7 +158,7 @@ else
     info "host key is known, that sshd is running, and that the key in"
     info "authorized_keys matches this identity."
     info ""
-    info "$PASSED passed, $((FAILED + 1)) failed"
+    info "$PASSED passed, $FAILED failed"
     exit 1
 fi
 

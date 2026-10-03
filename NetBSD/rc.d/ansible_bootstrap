@@ -1,0 +1,93 @@
+#!/bin/sh
+#
+# Maintain Ansible readiness at boot.
+#
+# PROVIDE: ansible_bootstrap
+# REQUIRE: NETWORKING LOGIN sshd
+#
+# Deliberately no KEYWORD line. `nostart` was tried first, by analogy
+# with the FreeBSD script's `nojail`, and means the opposite of what it
+# reads like: /etc/rc runs `rcorder -s nostart`, so the keyword excludes
+# a script from the boot sequence entirely. The hook installed, reported
+# itself enabled via its own rcvar, and would never have run -- visible
+# only because `service -e` disagreed with rc.conf. The only base script
+# using it is downinterfaces, which runs at shutdown.
+#
+# A short-lived boot task, not a daemon: it reconciles the readiness
+# prerequisites and exits.
+#
+# The REQUIRE list is load-bearing and was read from rcorder before this
+# was written, having cost FreeBSD a boot cycle to discover:
+#
+#   NETWORKING  the package repository may be needed
+#   LOGIN       nothing here may delay the console becoming usable; a
+#               package operation can consume the whole PKG_TIMEOUT
+#   sshd        sshd is ordered after LOGIN on NetBSD and so starts
+#               late. Run before it and the engine finds sshd enabled
+#               but not yet started, "repairs" it by starting it early,
+#               and reports a change on every boot of a healthy host.
+#
+# Measured on NetBSD 11.0: NETWORKING at 39, DAEMON at 86, rc.d/local at
+# 95, LOGIN at 110, sshd at 112. Note that rc.local runs at 95 and so is
+# unusable for this -- it is ordered before sshd, which is why this is an
+# rc.d script even though NetBSD has rc.local and OpenBSD uses it.
+#
+# Enable by adding ansible_bootstrap=YES to /etc/rc.conf; the installer
+# does that in a marked block.
+
+# The idiom every base rc.d script uses, rather than a plain `.`: it
+# avoids re-sourcing when rc.subr is already loaded, which it is when
+# service(8) evaluates a script.
+$_rc_subr_loaded . /etc/rc.subr
+
+name="ansible_bootstrap"
+rcvar="ansible_bootstrap"
+start_cmd="ansible_bootstrap_start"
+stop_cmd=":"
+status_cmd="ansible_bootstrap_status"
+extra_commands="status"
+
+ansible_bootstrap_engine="/usr/local/libexec/ansible-bootstrap"
+ansible_bootstrap_log="/var/log/ansible-bootstrap.log"
+
+# Announce the work and report the outcome on the console, with the
+# detail going to the log. Without this the console shows an unexplained
+# pause, and a failed reconciliation is visible only to someone who
+# thinks to read the log.
+#
+# Returns 0 even when reconciliation fails: this is a readiness task,
+# and a non-zero exit during boot is not worth risking the rest of the
+# sequence over. The failure is announced and recorded, and a later boot
+# or a manual apply retries.
+ansible_bootstrap_start()
+{
+	if [ ! -x "$ansible_bootstrap_engine" ]; then
+		warn "$ansible_bootstrap_engine is missing or not executable"
+		return 0
+	fi
+
+	echo "ansible-bootstrap: reconciling Ansible readiness"
+
+	if "$ansible_bootstrap_engine" apply >> "$ansible_bootstrap_log" 2>&1; then
+		echo "ansible-bootstrap: ready"
+	else
+		echo "ansible-bootstrap: FAILED, see $ansible_bootstrap_log"
+	fi
+
+	return 0
+}
+
+# Reports current readiness rather than whether anything is running,
+# because nothing is: the engine's own read-only check is the
+# meaningful answer.
+ansible_bootstrap_status()
+{
+	if [ ! -x "$ansible_bootstrap_engine" ]; then
+		err 1 "$ansible_bootstrap_engine is missing or not executable"
+	fi
+
+	"$ansible_bootstrap_engine" check
+}
+
+load_rc_config $name
+run_rc_command "$1"

@@ -81,7 +81,7 @@ The five invariants are unchanged; only the mechanisms differ.
 | Service account | `pw useradd`, home `/home/ansible` | Login shell must **not** be `/bin/ksh`: FreeBSD has no ksh in base. |
 | SSH public-key access | Same root-owned key source, account-owned `authorized_keys` | Logic is platform-independent and should move to the shared engine unchanged. |
 | Python | `pkg install`, interpreters in `/usr/local/bin` | Same discovery approach and the same `PYTHON_MIN`/`PYTHON_MAX` question. |
-| Privilege escalation | `doas` or `sudo`, **from packages** | Neither is in the FreeBSD base system. See below. |
+| Privilege escalation | `doas`, **from packages** | Neither `doas` nor `sudo` is in the FreeBSD base system, and the Handbook treats `sudo` as the standard. See below. |
 
 ## Confirmed on 15.1-RELEASE (arm64)
 
@@ -133,9 +133,18 @@ reachable repository. That inverts part of the ordering and means a
 mirror failure can block a prerequisite that is unconditionally
 available on OpenBSD.
 
-**Standardized on `doas`**, so the shared engine's `doas.conf` handling
-— the marked block, the refusal to duplicate its own rule, the refusal
-to outrank an administrator's — carries over unchanged, with only
+**Configured through `doas`** — chosen for shared-code reuse rather
+than convention, and the distinction matters here. FreeBSD's own
+Handbook treats `sudo` as the standard ("The most used application is
+currently Sudo") and describes `doas` as "an alternative to the widely
+used sudo(8) command". So this is not the tool a FreeBSD administrator
+would expect; see
+[the repository README](../README.md#why-doas-and-what-that-costs) for
+the reasoning and what it costs.
+
+The benefit is that the shared engine's `doas.conf` handling — the
+marked block, the refusal to duplicate its own rule, the refusal to
+outrank an administrator's — carries over unchanged, with only
 `DOAS_BIN` and `DOAS_CONF` differing. `adapter_escalation_prepare`
 installs it, bootstrapping `pkg` first if that stub has never run, and
 both operations are bounded. On a host where the repository is
