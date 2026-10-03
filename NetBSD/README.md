@@ -109,6 +109,51 @@ cost a boot cycle to find; here the order was read first, and
 So OpenBSD uses `rc.local` and the other two use `rc.d`, and the reason
 is ordering rather than preference.
 
+### pkgsrc does not create its own PKG_SYSCONFDIR
+
+The `doas` package installs the binary setuid root at
+`/usr/pkg/bin/doas` and an example under `share`, but **not
+`/usr/pkg/etc`**. The config path is compiled into the binary —
+
+```sh
+$ strings /usr/pkg/bin/doas | grep -i doas.conf
+/usr/pkg/etc/doas.conf
+```
+
+— so it is that directory or nothing, and the adapter creates it after
+installing the package.
+
+Without it the first install fails in a way that says nothing about the
+cause:
+
+```text
+ansible-bootstrap: change: Configuring passwordless doas
+mktemp: mkstemp failed on /usr/pkg/etc/doas.conf.9yAGLCIP: No such file or directory
+ansible-bootstrap: ERROR: Cannot create temporary doas configuration
+```
+
+The engine reports only that it could not create a temporary file,
+because from its point of view that is all that happened. Neither
+predecessor could surface this: OpenBSD's `doas.conf` lives in `/etc`,
+which always exists, and FreeBSD's package creates
+`/usr/local/etc` itself.
+
+### Account creation warns, harmlessly
+
+NetBSD's `useradd` validates `-p` more strictly than OpenBSD's and
+rewrites the value:
+
+```text
+useradd: Password `*' is invalid: setting it to `*************'
+```
+
+The account is still locked — no `crypt` output equals a row of
+asterisks — so the invariant holds and the warning is cosmetic. It is
+left alone rather than dropping `-p`, because what `useradd` does with
+no `-p` at all has not been measured on this platform, and changing how
+an account's password is set on an unverified hunch is not worth saving
+one line of log noise.
+
 ### Package access has to be derived
 
 A stock installation has **no `PKG_PATH`** and nothing under

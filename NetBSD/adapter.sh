@@ -50,8 +50,19 @@ RC_END='# END ansible-bootstrap'
 adapter_create_account()
 {
     # -p '*' leaves no usable password; SSH public-key authentication is
-    # configured separately by the engine. NetBSD's useradd shares its
-    # lineage with OpenBSD's and takes the same flags.
+    # configured separately by the engine.
+    #
+    # NetBSD's useradd validates the argument more strictly than
+    # OpenBSD's and rewrites it, warning:
+    #
+    #   useradd: Password `*' is invalid: setting it to `*************'
+    #
+    # The outcome is still a locked account -- no crypt output equals a
+    # row of asterisks -- so the invariant holds and the warning is
+    # cosmetic. Left as it is rather than dropping -p, because what
+    # useradd does with no -p at all has not been measured here, and an
+    # unverified change to how the account's password is set is not
+    # worth saving one line of log noise.
     useradd -m -d "$HOME_DIR" -s "$LOGIN_SHELL" -p '*' "$ACCOUNT"
 }
 
@@ -72,6 +83,21 @@ adapter_escalation_prepare()
     # The install status is advisory; the binary appearing is the gate.
     [ -x "$DOAS_BIN" ] ||
         die "$DOAS_BIN is still missing after installing $DOAS_PACKAGE"
+
+    # pkgsrc does not create its PKG_SYSCONFDIR: the doas package ships
+    # the binary and an example, but not /usr/pkg/etc itself. The engine
+    # is about to write policy there via mktemp, which fails with ENOENT
+    # on a missing parent and reports only that it could not create a
+    # temporary file -- a diagnostic that says nothing about the real
+    # cause. Confirmed with `strings /usr/pkg/bin/doas`: the path is
+    # compiled into the binary, so it is this directory or nothing.
+    doas_dir=${DOAS_CONF%/*}
+
+    if [ ! -d "$doas_dir" ]; then
+        changed "Creating $doas_dir for doas policy"
+        install -d -o root -g wheel -m 0755 "$doas_dir" ||
+            die "Cannot create $doas_dir"
+    fi
 }
 
 # `service -e NAME` prints the script path and exits 0 when the service
