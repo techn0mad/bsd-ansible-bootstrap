@@ -37,10 +37,18 @@ Ansible.
 > incidentally confirmed that reading uid and gid from the `passwd` entry
 > rather than hardcoding them was the right call.
 >
+> The boot hook has since been re-validated on a pristine 7.9 guest
+> after the escalation change, with the managed `doas` block deleted
+> *and* `sshd` disabled: one boot repaired both unattended in three
+> changes, and a second with no drift made none.
+>
 > Not yet exercised: a boot with the package mirror **unreachable**,
-> and any release other than 7.9. Treat it as a working prototype
-> rather than a tested release, and see the checklist at the end for
-> the assumptions that remain unconfirmed.
+> and any release other than 7.9. NetBSD has run the mirror case and it
+> found a real defect in shared code, so it is worth running here; see
+> [NetBSD/README.md](../NetBSD/README.md#a-boot-with-the-package-repository-unreachable--done).
+> Treat this as a working prototype rather than a tested release, and
+> see the checklist at the end for the assumptions that remain
+> unconfirmed.
 
 ## Readiness contract
 

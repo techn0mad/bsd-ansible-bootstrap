@@ -66,8 +66,11 @@
 > 617, and left no orphaned process.
 >
 > Still unexercised: that happening unattended during boot rather than
-> from a hand-run `apply`. The repository-wide
-> [README](../README.md) defines the contract both platforms must
+> from a hand-run `apply`. NetBSD has now run exactly that case, and it
+> found a real defect in the shared `run_bounded` — see
+> [NetBSD/README.md](../NetBSD/README.md#a-boot-with-the-package-repository-unreachable--done)
+> — so it is worth running here too. The repository-wide
+> [README](../README.md) defines the contract all three platforms must
 > satisfy.
 
 ## What this contains

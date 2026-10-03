@@ -23,7 +23,11 @@
 > boot](#drift-repaired-unattended-at-boot--done) — was finally run,
 > with the drop-in deleted *and* the administrator's `sshd=YES` flipped.
 > One boot repaired both in three changes; a second with no drift made
-> none.
+> none. The last outstanding case on this platform, [a boot with the
+> package repository unreachable](#a-boot-with-the-package-repository-unreachable--done),
+> was run too, and turned up a real defect: NetBSD's `/bin/sh` was
+> leaking `run_bounded`'s internals into the operator's log on the
+> timeout path. **Every validation written up here has now been run.**
 >
 > `lib/controller-test.sh -a` then passed 10/10 against that host,
 > unmodified — the same script the other two platforms use. The
@@ -367,12 +371,16 @@ If SSH is dead afterwards, the hook did not run when a service it
 `REQUIRE`s was skipped — which would be a genuine ordering bug and
 worth knowing. Recover with `service ansible_bootstrap onestart`.
 
-### A boot with the package repository unreachable — still outstanding
+### A boot with the package repository unreachable — done
 
-The one case not yet run, and the only path that exercises
-`run_bounded`'s timeout for real. A misconfigured repository fails fast
-and does not test the bound, so `ftp` has to be made to hang — the adapter fetches the package index
-with it, and the engine's `PATH` starts with `/sbin`:
+The only path that exercises `run_bounded`'s timeout for real, and the
+one that matters most: this is the code that once ran for **617
+seconds under a 15-second bound** on FreeBSD.
+
+A misconfigured repository fails fast and does not test the bound, so
+`ftp` has to be made to hang — the adapter fetches the package index
+with it, and the engine's `PATH` starts with `/sbin` while the real
+`ftp` is `/usr/bin/ftp`:
 
 ```sh
 sed 's/^PKG_TIMEOUT=300$/PKG_TIMEOUT=15/' /usr/local/libexec/ansible-bootstrap > /tmp/e
@@ -383,11 +391,51 @@ chmod +x /sbin/ftp
 reboot
 ```
 
-Expect the console to show `FAILED`, the log to carry `Exceeded 15s;
-terminating: ftp -o - …` followed by `Could not query the package
-repository within 15s`, **boot to complete normally**, and SSH to still
-work — only Python is broken. That last part is the whole purpose of
-bounding the operation.
+The console showed `FAILED`, boot completed normally, and SSH still
+worked. The log:
+
+```text
+ansible-bootstrap: No compatible Python interpreter is installed; querying packages
+ansible-bootstrap: Exceeded 15s; terminating: ftp -o - https://cdn.NetBSD.org/.../All/
+ansible-bootstrap: Could not query the package repository within 15s.
+ansible-bootstrap: Check network reachability and PKG_PATH.
+ansible-bootstrap: Boot continues; a later boot or a manual apply will retry.
+ansible-bootstrap: ERROR: No installable Python interpreter found
+```
+
+The bound fired at 15s against a command that would have run for 600,
+and the stall was ~17s — the bound plus the two-second `TERM` grace.
+**The other four invariants stayed OK**, because `apply_python` runs
+last in `apply_all`; only Python was broken. That is the whole purpose
+of bounding the operation. A later `apply` with the repository reachable
+reinstalled `python314` in one change.
+
+Worth noting for a `PKG_TIMEOUT` left at its default of 300: two bounded
+calls on this platform means a boot can stall for ten minutes before
+giving up. The bound works, but the default is generous for something
+that runs before a console login.
+
+#### The timeout path used to leak shell internals into the log
+
+Found by running the above. Between the engine's own two messages sat:
+
+```text
+[1]   Terminated   "${@}" </dev/null >"${bounded_out}"
+```
+
+NetBSD's `/bin/sh` announces the reaping of a signal-killed background
+job, naming `run_bounded`'s internals in the operator's log — the one
+log a human reads after an unattended boot-time failure. Measured on all
+three platforms with `run_bounded` lifted into a standalone script:
+OpenBSD and FreeBSD are silent, NetBSD is not.
+
+Fixed by discarding stderr across the whole terminate sequence, in a
+**brace group rather than a subshell**, because `wait` has to stay in
+the shell that owns the job. Nothing in that group diagnoses anything:
+the kills already tolerate failure and `sleep` says nothing. Re-measured
+afterwards — all three still return 124 after the bound and 0 for a
+command that finishes, and the log is seven lines of engine output with
+no shell noise.
 
 Clean up promptly; `/sbin/ftp` shadows `ftp` for everything:
 

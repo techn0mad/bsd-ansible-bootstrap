@@ -273,11 +273,28 @@ run_bounded()
     if kill -0 "$bounded_pid" 2>/dev/null; then
         log "Exceeded ${limit}s; terminating: $*"
 
-        kill_tree "$bounded_pid" TERM
-        sleep 2
-        kill_tree "$bounded_pid" KILL
+        # A brace group, not a subshell: `wait` has to stay in the shell
+        # that owns the job. stderr is discarded across the whole
+        # sequence because NetBSD's sh announces the reaping of a
+        # signal-killed background job, naming this function's own
+        # internals in the operator's log:
+        #
+        #   [1]   Terminated   "${@}" </dev/null >"${bounded_out}"
+        #
+        # It appears on the timeout path only, which is exactly the log
+        # a human reads after an unattended boot-time failure. OpenBSD
+        # and FreeBSD are silent here; measured on all three.
+        #
+        # Nothing in the group diagnoses anything: the kills already
+        # tolerate failure and sleep says nothing.
+        {
+            kill_tree "$bounded_pid" TERM
+            sleep 2
+            kill_tree "$bounded_pid" KILL
 
-        wait "$bounded_pid" 2>/dev/null
+            wait "$bounded_pid"
+        } 2>/dev/null
+
         bounded_status=124
     else
         wait "$bounded_pid" || bounded_status=$?

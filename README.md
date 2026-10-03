@@ -6,16 +6,20 @@ reconciles only the prerequisites for Ansible access and execution,
 and exits. It is not a resident daemon or a replacement for Ansible.
 
 > **Project status:** All three platforms are validated on hardware —
-> OpenBSD 7.9, FreeBSD 15.1 and NetBSD 11.0 — each reaching all five
-> invariants from a pristine host and passing the controller-side suite.
-> NetBSD's boot hook has not yet run; see
-> [NetBSD/README.md](NetBSD/README.md). The OpenBSD implementation is
-> validated on a 7.9 guest — all five invariants, drift repaired unattended at boot, and a
-> controller-side Ansible run — but is still a prototype rather than a
-> tested release; see [OpenBSD/README.md](OpenBSD/README.md) for what
-> remains unconfirmed. The FreeBSD implementation is written against
-> probed 15.1 behaviour and **has not yet run on a host**. Test in a
-> disposable VM before enabling either at boot.
+> OpenBSD 7.9, FreeBSD 15.1 and NetBSD 11.0 — each installed from a
+> pristine host to all five invariants, passing the controller-side
+> suite 10/10, and running the boot hook unattended. On every platform a
+> boot with **two** faults injected at once, privilege escalation broken
+> and `sshd` disabled, repaired both in three changes, and a second boot
+> with no drift made none.
+>
+> Each platform is still validated on a **single release** — 7.9, 15.1,
+> 11.0 — so treat it as a tested prototype rather than a release.
+> Two cases remain unexercised, both the same one: a boot with the
+> package repository **unreachable** on OpenBSD and on FreeBSD. NetBSD
+> has run it ([NetBSD/README.md](NetBSD/README.md)), where it found a
+> real defect, so it is worth running on the other two. Each platform's
+> README lists what remains unconfirmed there.
 
 ## Goals
 
