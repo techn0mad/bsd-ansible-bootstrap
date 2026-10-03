@@ -2,7 +2,8 @@
 
 `lib/ansible-bootstrap` is platform-independent. Each supported
 operating system supplies an adapter — `OpenBSD/adapter.sh`,
-`FreeBSD/adapter.sh` — which the engine sources as root after checking
+`FreeBSD/adapter.sh`, `NetBSD/adapter.sh` — which the engine sources as
+root after checking
 that it is a regular file owned by `root:wheel`, mode `0700`, and not a
 symbolic link.
 
@@ -24,20 +25,57 @@ and needs a home it owns is contract, and stays in the engine.
 Likewise, how to list available packages is a mechanism; which Python
 versions are acceptable is Ansible policy, and stays in the engine.
 
-Resist widening this. Two operating systems do not justify a framework,
-and every function moved here is one the engine can no longer reason
-about.
+Resist widening this. Three operating systems do not justify a
+framework, and every function moved here is one the engine can no longer
+reason about. Constants are cheaper than functions: they are data the
+engine still reasons about, which is why privilege escalation is
+expressed as a style plus five paths rather than as an adapter function.
 
 ## Constants an adapter must set
 
 | Constant | Meaning |
 | --- | --- |
-| `LOGIN_SHELL` | Login shell for the service account. `/bin/ksh` on OpenBSD; FreeBSD has no ksh in base. |
-| `DOAS_BIN` | Absolute path to `doas`. `/usr/bin/doas` in the OpenBSD base system; under `/usr/local/bin` when it comes from a package. |
-| `DOAS_CONF` | Absolute path to `doas.conf`. `/etc/doas.conf` on OpenBSD; `/usr/local/etc/doas.conf` for a packaged doas. |
+| `LOGIN_SHELL` | Login shell for the service account. `/bin/ksh` on OpenBSD and NetBSD; FreeBSD has no ksh in base. |
+| `ESCALATION_STYLE` | `doas` or `sudo` — which of the engine's two policy writers to use. Anything else is refused at adapter load. |
+| `ESCALATION_BIN` | Absolute path to that tool. |
+| `ESCALATION_CONF` | The policy file **this service writes**: a `doas.conf` whose managed block it owns, or a `sudoers.d` drop-in it owns outright. |
+| `ESCALATION_POLICY` | The policy file **the administrator owns**, read but never written. The same path as `ESCALATION_CONF` under the doas style; the main `sudoers` under the sudo style. |
+| `ESCALATION_VALIDATE` | A command that validates a candidate policy file passed as its last argument, without installing it: `doas -C`, or `visudo -c -f`. Expanded unquoted, so it may carry its own options. |
 
 An adapter may also reassign `PYTHON_DIR` if its packages install
 interpreters somewhere other than `/usr/local/bin`.
+
+The engine verifies after sourcing that `ESCALATION_STYLE` is a style it
+implements and that every constant above is non-empty. An adapter that
+forgot one would otherwise configure no escalation at all and report the
+host ready.
+
+## Escalation is a style, not a function
+
+Privilege escalation is the one invariant where the adapter supplies
+constants and the *engine* holds both implementations, dispatched on
+`ESCALATION_STYLE`. That is deliberate:
+
+- Writing a policy file that grants root is the most security-sensitive
+  thing this program does. Both implementations refuse to outrank an
+  administrator's rule, validate before installing, and verify the
+  effective result afterwards. Those properties are reviewable in one
+  place; spread across adapters they would be three copies to keep
+  honest.
+- The two styles are genuinely different shapes, not one shape with
+  different strings. `doas.conf` is the administrator's file, so the
+  engine edits a marked block within it and preserves everything else. A
+  `sudoers.d` drop-in is a file this service owns outright, so it is
+  simply written — which costs the marker that told a later run "this is
+  mine", and buys back drift repair by comparing content, owner and mode
+  instead.
+- `ESCALATION_STYLE` is exactly the knob a future user-facing choice
+  between the two would set, so the seam is already where it needs to be.
+
+Which style a platform gets is **policy**, and the defaults are in the
+repository README: OpenBSD uses `doas`, which is in its base system;
+FreeBSD and NetBSD use `sudo`, because neither tool is in base there and
+`sudo` is the one `ansible-core` supports without an added collection.
 
 ## Functions an adapter must define
 
@@ -52,13 +90,19 @@ made differently.
 
 ### `adapter_escalation_prepare`
 
-Ensure the `doas` binary exists, before the engine writes any policy.
-A no-op on OpenBSD, where doas is in the base system.
+Ensure `ESCALATION_BIN` exists, before the engine writes any policy. A
+no-op on OpenBSD, where `doas` is in the base system.
 
-This exists because the dependency inverts on FreeBSD: doas is a
-package there, so privilege escalation cannot be configured until the
-package manager has worked and the repository was reachable. On
-OpenBSD escalation is always configurable; on FreeBSD it is not.
+This exists because the dependency inverts everywhere else: the
+escalation tool is a package on FreeBSD and NetBSD, so privilege
+escalation cannot be configured until the package manager has worked and
+the repository was reachable. On OpenBSD escalation is always
+configurable; elsewhere it is not.
+
+The engine creates `ESCALATION_CONF`'s parent directory itself under the
+sudo style, so an adapter need not — the `sudo` package was measured to
+create its own `PKG_SYSCONFDIR` on both FreeBSD 15.1 and NetBSD 11.0,
+unlike the `doas` package on NetBSD, which creates nothing.
 
 ### `adapter_service_enabled NAME`, `adapter_service_running NAME`
 
@@ -139,11 +183,16 @@ A boot-hook half provides one variable and two functions:
 | `boot_hook_show` | Print what would be installed, for the case where the hook is withheld so it can be added by hand. |
 | `boot_hook_install` | Install or update it, and say which. Must be safe to repeat. |
 
-The two platforms differ more here than anywhere else in the project.
+The platforms differ more here than anywhere else in the project.
 OpenBSD appends a marked block to `/etc/rc.local`, a file belonging to
 the administrator, so it must locate its own block, replace it, preserve
 unrelated content, and leave ownership and mode alone. FreeBSD has no
 `rc.local` at all on 15.1 — `/etc/rc` does not reference it — so it
 installs an `rc.d` script, a whole file this service owns, and sets
-`ansible_bootstrap_enable` with `sysrc`. Overwriting a file you own is
-inherently idempotent, which makes FreeBSD the easier half.
+`ansible_bootstrap_enable` with `sysrc`. NetBSD also installs an `rc.d`
+script, but has no `sysrc`, so enabling it means a marked block in
+`/etc/rc.conf`, back to editing the administrator's file.
+
+Overwriting a file you own is inherently idempotent; editing someone
+else's is the work. The same split runs through privilege escalation
+above, in the same direction and for the same reason.

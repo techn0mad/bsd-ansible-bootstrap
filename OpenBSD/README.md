@@ -31,9 +31,9 @@ Ansible.
 > which is what distinguishes a working `adapter_service_enabled` from a
 > broken one. `adapter_create_account` has since been exercised too, by
 > deleting the account and reconciling: `check` reported `account`,
-> `authorized_key` and `doas` all NOT READY — `doas` because its check
-> runs `su ansible`, which cannot work without the account — and `apply`
-> recreated all three. The account returned with a different uid, which
+> `authorized_key` and `escalation` all NOT READY — escalation because
+> its check runs `su ansible`, which cannot work without the account —
+> and `apply` recreated all three. The account returned with a different uid, which
 > incidentally confirmed that reading uid and gid from the `passwd` entry
 > rather than hardcoding them was the right call.
 >
@@ -287,7 +287,7 @@ fails immediately instead of hanging. Setting
 
 On success the installer prints the `rc.local` snippet it *would*
 have added and stops. Work through "Manual validation" below —
-especially the controller-side SSH, `doas`, and Ansible tests, which
+especially the controller-side SSH, escalation, and Ansible tests, which
 no local check can substitute for — and only then enable unattended
 reconciliation:
 
@@ -433,9 +433,17 @@ reporting a fault that `apply` has no safe way to repair. The
 guarantee is narrower and more useful — this service never creates a
 duplicate.
 
-**`doas`:** OpenBSD includes `doas` in the base system. The intended
-managed policy is `permit nopass ansible as root`, but the effective
-result depends on the full rule ordering. Check it by executing a
+**`doas`:** OpenBSD includes `doas` in the base system, which is why it
+is the one platform that defaults to it; FreeBSD and NetBSD, where
+neither tool is in base, default to `sudo`. The engine holds a policy
+writer for each style and selects on the adapter's `ESCALATION_STYLE`,
+so everything in this section describes the doas style specifically —
+see
+[the repository README](../README.md#which-escalation-tool-and-why-it-differs-per-platform)
+for the comparison.
+
+The intended managed policy is `permit nopass ansible as root`, but the
+effective result depends on the full rule ordering. Check it by executing a
 harmless noninteractive command *as the Ansible account*; `doas -C` by
 itself is not a substitute for this test. Changes to `/etc/doas.conf`
 must preserve unrelated policy and be validated before atomic
@@ -616,8 +624,9 @@ mechanism.
 
 `../lib/controller-test.sh` runs the checks the engine cannot perform on
 itself — a real SSH login, a real Ansible module run, `become` through
-the doas plugin. It is shared between platforms and executed **from the
-Ansible controller**, so it is described in the
+the target's become plugin, which it selects from the target's
+`uname -s` (`community.general.doas` here). It is shared between
+platforms and executed **from the Ansible controller**, so it is described in the
 [repository README](../README.md#controller-side-tests) rather than
 duplicated here.
 

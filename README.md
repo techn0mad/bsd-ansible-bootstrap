@@ -44,7 +44,7 @@ The service maintains these five invariants:
 | Service account | Dedicated `ansible` account exists, has the expected home and usable login shell, and is permitted to authenticate by public key. |
 | SSH authentication | The configured controller public key is present in the account's `authorized_keys`, with safe ownership and permissions. |
 | Python | A Python 3 interpreter compatible with the selected `ansible-core` version is available; its path can be reported to the controller. |
-| Privilege escalation | The `ansible` account can execute commands as root noninteractively, through a supported mechanism (`doas` or `sudo`). |
+| Privilege escalation | The `ansible` account can execute commands as root noninteractively, through the platform's default mechanism — `doas` on OpenBSD, `sudo` on FreeBSD and NetBSD. |
 
 The service **does not** manage general host configuration,
 application packages, firewall rules, other users, or the broader SSH
@@ -197,44 +197,108 @@ A fingerprint is an identifier, **not a signature**. Comparing a
 fingerprint with a value independently obtained from the controller is
 the useful authenticity check.
 
-### Why `doas`, and what that costs
+### Which escalation tool, and why it differs per platform
 
-All three platforms are configured through `doas`, but only OpenBSD
-makes that the native choice — there it is in the base system and is the
-documented mechanism. On FreeBSD and NetBSD neither `doas` nor `sudo` is
-in base; both come from packages, and both platforms' own documentation
-treats **`sudo`** as the standard. The FreeBSD Handbook puts it plainly:
-"The most used application is currently Sudo", describing `doas` as "an
-alternative to the widely used sudo(8) command."
+Each platform gets the tool its own documentation treats as standard:
 
-So the choice is made on engineering grounds rather than convention:
+| Platform | Default | Why |
+| --- | --- | --- |
+| OpenBSD | `doas` | In the base system, and the documented mechanism. |
+| FreeBSD | `sudo` | Neither tool is in base. The Handbook: "The most used application is currently Sudo", describing `doas` as "an alternative to the widely used sudo(8) command." |
+| NetBSD | `sudo` | Neither tool is in base — `man.netbsd.org` has no `doas.1`, base offers only `su(1)` — and both come from pkgsrc. |
 
-- One policy implementation serves every platform. Generating and
-  validating `doas.conf` — a marked block, a refusal to duplicate its
-  own rule, a refusal to outrank an administrator's — is written once in
-  the engine, with only `DOAS_BIN` and `DOAS_CONF` differing per
-  adapter. A `sudoers` equivalent would be a second implementation.
-- `doas.conf` is far simpler to generate correctly than `sudoers`, and
-  this is a file that grants root. Fewer ways to get it subtly wrong is
-  a safety property, not just a convenience.
+On the two platforms where there is no native tool to defer to, `sudo`
+wins on a second count: it is `ansible-core`'s own default become
+method, while `doas` needs the `community.general` collection for its
+become plugin. Defaulting to `doas` there would impose a controller-side
+dependency to use a non-native tool.
 
-The costs are real and worth stating:
+`check` reports which method the controller should use, next to the
+interpreter path, because neither is something the controller can
+derive:
 
-- It is not what a FreeBSD or NetBSD administrator would expect to find.
-- It adds a controller-side dependency. `sudo` is `ansible-core`'s
-  default become method; `doas` needs the `community.general` collection
-  for its become plugin, which is why
-  [`lib/controller-test.sh`](lib/controller-test.sh) checks for that
-  plugin before anything else.
+```text
+ansible-bootstrap: escalation: OK (ansible_become_method=sudo)
+ansible-bootstrap: python: OK (ansible_python_interpreter=/usr/local/bin/python3.13)
+```
 
-Supporting `sudo` as well would not be a rewrite — `DOAS_BIN`,
-`DOAS_CONF` and `adapter_escalation_prepare` already isolate the tool —
-but the policy writing itself lives in the engine and is `doas`-specific
-in both syntax and its `doas -C` validation. Making it pluggable means
-another adapter function, and
-[`lib/adapter-contract.md`](lib/adapter-contract.md) argues against
-widening the contract before there is a second implementation to justify
-it.
+[`lib/controller-test.sh`](lib/controller-test.sh) detects the target's
+OS over SSH and selects the matching become method, so one invocation
+works against any supported host; `-m` overrides it.
+
+#### What this costs, and the shape of the code
+
+Supporting both means two policy writers rather than one, and the
+`sudoers` one is writing a file that grants root — so the two were kept
+as different shapes rather than one shape with substituted strings:
+
+- **`doas`** edits a marked block inside `/etc/doas.conf`, a file
+  belonging to the administrator. It preserves unrelated rules, refuses
+  to append a second copy of its own, and refuses to outrank an existing
+  rule naming the account.
+- **`sudo`** writes `sudoers.d/ansible-bootstrap`, a file this service
+  owns outright. There is no block to find and nothing to preserve — but
+  also no marker saying "this is mine", so the drift check compares
+  content, ownership and mode instead. A truncated or `chmod`ped drop-in
+  is repaired; one that is already correct while `sudo -n` still fails
+  is reported as a conflict rather than rewritten on every boot.
+
+Both validate the candidate file with the tool's own parser before
+installing it — `doas -C`, `visudo -c -f` — and both verify the
+*effective* policy afterwards by running `-n /usr/bin/id -u` as the
+account.
+
+That effective test is also all `check` asks. It does not test whether
+*this service* wrote the policy: the invariant is that the account can
+reach root noninteractively, not that this program is the reason. An
+administrator who granted it in `sudoers` directly has satisfied it, and
+`apply` then writes nothing rather than adding a second grant.
+
+Both live in the engine, dispatched on one adapter constant,
+`ESCALATION_STYLE`. Adapters supply only paths. That keeps the
+root-granting code reviewable in one place instead of copied three
+times, and it is the same constant a future option would set — see
+below.
+
+#### A future option
+
+The per-platform default is a default, not a judgement about any
+host. An administrator may have standardized on one tool everywhere, and
+on OpenBSD in particular `sudo` is a perfectly ordinary package to
+install deliberately.
+
+There is currently no way to ask for the other tool: changing it means
+editing one line in the platform's `adapter.sh`. A future release may
+expose the choice — as an installer flag and a value persisted under
+`/etc/ansible-bootstrap`, so that reconciliation at boot keeps honouring
+it. The seam is already in the right place; what is missing is the
+plumbing to carry a stored preference into the engine, and the decision
+about what should happen to the policy the *other* mechanism was granted
+by an earlier run.
+
+#### Changing the mechanism on a host already bootstrapped
+
+Switching a host from one mechanism to the other **does not revoke the
+first one**. The engine manages the mechanism in effect and does not go
+looking for policy it wrote under another; a host bootstrapped with
+`doas` and later reconciled with `sudo` keeps its passwordless `doas`
+rule, so removing the `sudoers` drop-in would not actually revoke the
+account's root access.
+
+Remove the previous grant by hand. For a host that was bootstrapped with
+`doas`, the managed block is delimited and nothing else in the file is
+this service's:
+
+```sh
+# Inspect first; this is a file that grants root.
+doas sed -n '/# BEGIN ansible-bootstrap/,/# END ansible-bootstrap/p' \
+    /usr/local/etc/doas.conf
+```
+
+Then delete those lines, keeping the rest, and confirm with
+`su ansible -c 'doas -n /usr/bin/id -u'` that it now fails. Uninstalling
+the package the grant belonged to is the cleaner end state where nothing
+else uses it.
 
 ### Privilege and configuration boundaries
 
@@ -278,33 +342,48 @@ are options rather than constants.
 lib/controller-test.sh 192.168.1.87
 ```
 
-The sample below is from the OpenBSD guest; the shape is the same for
-any target.
+The sample below is from the FreeBSD guest, run with `-a`; the shape is
+the same for any target. Only the `escalation` section differs between
+platforms, and it is detected rather than configured.
 
 ```text
 preflight
   ok    ansible runs (ansible [core 2.21.4])
-  ok    become plugin available: community.general.doas
 
 ssh
   ok    key-only login as ansible
   ok    authorized_keys contains this key (SHA256:aWo3...)
-  ok    doas -n id -u returns 0
+
+escalation
+        target FreeBSD; become method sudo (detected)
+  ok    become plugin available: sudo
+  ok    sudo -n id -u returns 0
 
 ansible
   ok    ping module
   ok    fact gathering
-        ansible_distribution = OpenBSD
-        ansible_python_version = 3.13.13
-        interpreter   = /usr/local/bin/python3.13
-  ok    become via community.general.doas reaches root
+        ansible_distribution = FreeBSD
+        ansible_distribution_version = 15.1
+        ansible_python_version = 3.14.7
+        interpreter   = /usr/local/bin/python3.14
+  ok    become via sudo reaches root
 
-8 passed, 0 failed
+idempotency (modifies the host)
+  ok    remote apply succeeded
+  ok    second apply made no changes
+
+10 passed, 0 failed
 ```
 
+Against the OpenBSD guest the same invocation reports `target OpenBSD;
+become method community.general.doas (detected)` and tests `doas`
+instead. Without `-a` the last section is skipped and the count is 8.
+
 Options: `-u` account, `-i` identity, `-p` to force an interpreter
-path rather than letting Ansible discover one, `-m` become method, `-t`
-connect timeout. It exits non-zero if any check fails.
+path rather than letting Ansible discover one, `-m` become method —
+overriding detection — `-t` connect timeout, and `-a` to additionally
+run `apply` twice on the target, which modifies it. It exits non-zero if
+any check fails.
 
 Why these checks and not others — each one asserts something the
 engine's own `check` cannot:
@@ -318,9 +397,12 @@ engine's own `check` cannot:
   controller's own key proves the target trusts *this* key and not
   merely some key — which catches a rotated or replaced controller key
   that would otherwise surface much later as a mystifying auth failure.
-- The engine tests `doas` through `su`; Ansible reaches it over SSH
+- The engine tests escalation through `su`; Ansible reaches it over SSH
   through a become plugin. Those are different paths and both can fail
-  independently.
+  independently. The method is derived from the target's `uname -s`, so
+  one invocation works against any supported host and a host running the
+  wrong platform's adapter shows up as a mismatch rather than passing
+  quietly.
 - Fact gathering exercises the interpreter far harder than `ping`, and
   reports the path Ansible actually chose — the value that belongs in
   inventory.

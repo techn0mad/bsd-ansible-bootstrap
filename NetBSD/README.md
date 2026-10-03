@@ -8,6 +8,15 @@
 > One more change than FreeBSD, the extra being the `PKG_SYSCONFDIR`
 > that pkgsrc does not create.
 >
+> **Since then this platform's default escalation tool changed from
+> `doas` to `sudo`** — see
+> [Privilege escalation has no native tool here](#privilege-escalation-has-no-native-tool-here)
+> below. The same guest was re-validated after the switch: 10/10 again,
+> with `become method sudo (detected)`, and the eight fault-injection
+> cases tabulated in
+> [the FreeBSD README](../FreeBSD/README.md#escalation-fault-injection)
+> all behaved identically here.
+>
 > `lib/controller-test.sh -a` then passed 10/10 against that host,
 > unmodified — the same script the other two platforms use. The
 > `rc.conf` marked block, this platform's most distinctive mechanism,
@@ -39,7 +48,7 @@
 ```text
 NetBSD/
 ├── README.md
-├── adapter.sh       # engine adapter: accounts, packages, services, doas paths
+├── adapter.sh       # engine adapter: accounts, packages, services, escalation paths
 ├── boot-hook.sh     # installer adapter: the rc.d script and rc.conf assignment
 ├── install.sh       # wrapper over lib/install.sh
 └── rc.d/
@@ -62,6 +71,7 @@ Probed on a real guest rather than assumed.
 | Package tooling | pkgsrc's `pkg_add`/`pkg_info` in `/usr/sbin`, **no pkgin** — same *names* as OpenBSD's, different implementation |
 | `PYTHON_DIR` | `/usr/pkg/bin` — pkgsrc's prefix, not `/usr/local/bin` |
 | `doas` | **not present at all**, and no `doas.conf` anywhere — must come from pkgsrc. Neither is NetBSD's native tool: `man.netbsd.org` has no `doas.1` or `sudo.8`, and base offers only `su(1)`. |
+| `sudo` | also absent. The pkgsrc `sudo` package provides `/usr/pkg/bin/sudo` (setuid, `4511`) and `/usr/pkg/sbin/visudo`, and — unlike the `doas` package — **does** create its `PKG_SYSCONFDIR`: `/usr/pkg/etc/sudoers` (`0440`) and `/usr/pkg/etc/sudoers.d` (`0755`). The shipped `sudoers` ends with `@includedir /usr/pkg/etc/sudoers.d` as its last effective line, so a drop-in is read and is evaluated last. |
 | Service enable/disable | no `rcctl`, no `sysrc`; `service(8)` exists but has no enable subcommand |
 | Boot | `rc.d` and `rcorder`; `/etc/rc.local` exists but is run by `rc.d/local` |
 | Shared-engine assumptions | `getent`, `ls -ldn` layout, `pgrep -P`, `mktemp /var/run`, and `wait` under `set -m` all behave as the engine expects |
@@ -153,8 +163,10 @@ and when they do, `service -e` is the one that matters.
 So OpenBSD uses `rc.local` and the other two use `rc.d`, and the reason
 is ordering rather than preference.
 
-### pkgsrc does not create its own PKG_SYSCONFDIR
+### pkgsrc does not always create its own PKG_SYSCONFDIR
 
+A pkgsrc package is not obliged to create the directory its
+configuration belongs in, and the two escalation packages differ on it.
 The `doas` package installs the binary setuid root at
 `/usr/pkg/bin/doas` and an example under `share`, but **not
 `/usr/pkg/etc`**. The config path is compiled into the binary —
@@ -164,11 +176,8 @@ $ strings /usr/pkg/bin/doas | grep -i doas.conf
 /usr/pkg/etc/doas.conf
 ```
 
-— so it is that directory or nothing, and the adapter creates it after
-installing the package.
-
-Without it the first install fails in a way that says nothing about the
-cause:
+— so it is that directory or nothing. Without it the first install
+failed in a way that said nothing about the cause:
 
 ```text
 ansible-bootstrap: change: Configuring passwordless doas
@@ -176,11 +185,17 @@ mktemp: mkstemp failed on /usr/pkg/etc/doas.conf.9yAGLCIP: No such file or direc
 ansible-bootstrap: ERROR: Cannot create temporary doas configuration
 ```
 
-The engine reports only that it could not create a temporary file,
+The engine reported only that it could not create a temporary file,
 because from its point of view that is all that happened. Neither
-predecessor could surface this: OpenBSD's `doas.conf` lives in `/etc`,
-which always exists, and FreeBSD's package creates
-`/usr/local/etc` itself.
+predecessor could surface it: OpenBSD's `doas.conf` lives in `/etc`,
+which always exists, and FreeBSD's package creates `/usr/local/etc`
+itself.
+
+The `sudo` package, now the default here, *does* create
+`/usr/pkg/etc/sudoers.d` — measured, not assumed. The engine creates the
+drop-in's parent directory anyway when it is missing, so this platform's
+lesson outlived the package that taught it: the cost is one `stat`, and
+the failure it prevents is a diagnostic that points at the wrong thing.
 
 ### Account creation takes no `-p`
 
@@ -212,18 +227,33 @@ NetBSD ships neither `doas` nor `sudo`: `man.netbsd.org` has no
 pkgsrc. So unlike OpenBSD — where `doas` is in base and is the
 documented mechanism — there is no platform-native answer to match.
 
-This implementation uses `doas` for shared-code reuse rather than
-convention, which on NetBSD means `sudo` has the stronger claim by
-history and pkgsrc prominence. See
-[the repository README](../README.md#why-doas-and-what-that-costs) for
-the reasoning and what it costs.
+With no native tool to match, the default is `sudo`, which has the
+stronger claim here on two counts: pkgsrc prominence and history, and
+being the one `ansible-core` supports without the `community.general`
+collection. Defaulting to `doas` would mean imposing a controller-side
+dependency in order to use the *less* conventional tool. See
+[the repository README](../README.md#which-escalation-tool-and-why-it-differs-per-platform)
+for the full reasoning.
+
+This platform was first implemented with `doas`, for reuse of the
+engine's existing `doas.conf` writer; the engine now holds a writer for
+each style and the adapter supplies only paths. The `sudo` one is the
+simpler shape — a drop-in is a file this service owns outright — at the
+cost of having no marker to recognise its own work by, so drift is
+detected by comparing content, ownership and mode instead. On NetBSD
+that distinction was worth confirming directly, because `sudo` silently
+ignores a drop-in it does not trust:
+
+```text
+sudo: /usr/pkg/etc/sudoers.d/ansible-bootstrap is owned by uid 1001, should be 0
+```
 
 ### Package access has to be derived
 
 A stock installation has **no `PKG_PATH`** and nothing under
 `/usr/pkg`. Both predecessors arrived with working package access; this
-one does not, and because `doas` is also a package, privilege escalation
-depends on fixing that. FreeBSD's inversion was "escalation needs the
+one does not, and because the escalation tool is also a package,
+privilege escalation depends on fixing that. FreeBSD's inversion was "escalation needs the
 package manager"; NetBSD's is "escalation needs the package manager,
 which needs configuring first".
 

@@ -9,10 +9,22 @@
 # Login shell for the service account. OpenBSD ships ksh in base.
 LOGIN_SHELL=/bin/ksh
 
-# doas is in the OpenBSD base system, and its configuration lives in
-# /etc.
-DOAS_BIN=/usr/bin/doas
-DOAS_CONF=/etc/doas.conf
+# OpenBSD is the one platform that defaults to doas: it is the
+# OS-native tool, in the base system, and doas.conf is a base-system
+# file. The other supported platforms default to sudo. See the
+# "Privilege escalation" section of README.md.
+ESCALATION_STYLE=doas
+ESCALATION_BIN=/usr/bin/doas
+
+# The file this service writes, and the file the administrator's policy
+# is read from. The same file here: doas has no drop-in directory, so
+# the managed rule goes into a marked block in doas.conf.
+ESCALATION_CONF=/etc/doas.conf
+ESCALATION_POLICY=/etc/doas.conf
+
+# doas validates a configuration file given with -C, without installing
+# it.
+ESCALATION_VALIDATE='/usr/bin/doas -C'
 
 adapter_create_account()
 {
@@ -22,7 +34,8 @@ adapter_create_account()
 }
 
 # doas is always present on OpenBSD, so there is nothing to prepare.
-# On platforms where it is a package this is where it gets installed.
+# On platforms where the escalation tool is a package, this is where it
+# gets installed.
 adapter_escalation_prepare()
 {
     :

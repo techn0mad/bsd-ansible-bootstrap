@@ -19,6 +19,14 @@
 > second `apply` making no changes. A `sysrc sshd_enable=NO` drift test
 > was then repaired with exactly one change.
 >
+> **Since then this platform's default escalation tool changed from
+> `doas` to `sudo`** — see
+> [Where FreeBSD is not a renamed OpenBSD](#where-freebsd-is-not-a-renamed-openbsd)
+> below. The same guest was re-validated after the switch: 10/10 again,
+> with `become method sudo (detected)`, and [eight fault-injection
+> cases](#escalation-fault-injection) against the new policy writer all
+> behaved correctly.
+>
 > A reboot then exercised the `rc.d` hook and found a bug in its
 > `rcorder` placement — see *Boot integration* below. After the fix,
 > `rcorder` places the hook at 170, behind `LOGIN` at 160 and `sshd` at
@@ -60,7 +68,7 @@
 ```text
 FreeBSD/
 ├── README.md
-├── adapter.sh       # engine adapter: accounts, packages, services, doas paths
+├── adapter.sh       # engine adapter: accounts, packages, services, escalation paths
 ├── boot-hook.sh     # installer adapter: the rc.d script and rc.conf variable
 ├── install.sh       # wrapper over lib/install.sh
 └── rc.d/
@@ -81,7 +89,7 @@ The five invariants are unchanged; only the mechanisms differ.
 | Service account | `pw useradd`, home `/home/ansible` | Login shell must **not** be `/bin/ksh`: FreeBSD has no ksh in base. |
 | SSH public-key access | Same root-owned key source, account-owned `authorized_keys` | Logic is platform-independent and should move to the shared engine unchanged. |
 | Python | `pkg install`, interpreters in `/usr/local/bin` | Same discovery approach and the same `PYTHON_MIN`/`PYTHON_MAX` question. |
-| Privilege escalation | `doas`, **from packages** | Neither `doas` nor `sudo` is in the FreeBSD base system, and the Handbook treats `sudo` as the standard. See below. |
+| Privilege escalation | `sudo`, **from packages** | Neither `doas` nor `sudo` is in the FreeBSD base system; the Handbook treats `sudo` as the standard, so that is the default here. See below. |
 
 ## Confirmed on 15.1-RELEASE (arm64)
 
@@ -93,6 +101,8 @@ Probed on a real guest rather than assumed. These are settled and
 | Login shell | `/bin/sh`, `/bin/csh`, `/bin/tcsh` in base — **no ksh**, so OpenBSD's `/bin/ksh` cannot carry over |
 | `/home` | a real directory, not the historical symlink to `/usr/home`, so the shared home-directory check needs no loosening |
 | doas | not installed, and no `doas.conf` in either `/etc` or `/usr/local/etc` |
+| sudo | also not installed. The `sudo` package provides `/usr/local/bin/sudo` and `/usr/local/sbin/visudo`, creates `/usr/local/etc/sudoers` (`0440`) and `/usr/local/etc/sudoers.d` (`0755`), and the shipped `sudoers` ends with `@includedir /usr/local/etc/sudoers.d` as its last effective line — so a drop-in is read, and is evaluated last |
+| `visudo -c -f FILE` | exits 0 when the file parses, 1 when it does not, and 1 for a missing file — usable as the pre-install validator |
 | `wait` under `set -m` | returns the real status, so `run_bounded` works on ash as it does on pdksh |
 | `ls -ldn` | same column layout as OpenBSD, so the permission checks port unchanged |
 | `getent passwd` | works — but note it returns the **password hash** in field 2 when run as root, where OpenBSD returns `*`. Nothing reads that field; do not start. |
@@ -133,24 +143,42 @@ reachable repository. That inverts part of the ordering and means a
 mirror failure can block a prerequisite that is unconditionally
 available on OpenBSD.
 
-**Configured through `doas`** — chosen for shared-code reuse rather
-than convention, and the distinction matters here. FreeBSD's own
-Handbook treats `sudo` as the standard ("The most used application is
-currently Sudo") and describes `doas` as "an alternative to the widely
-used sudo(8) command". So this is not the tool a FreeBSD administrator
-would expect; see
-[the repository README](../README.md#why-doas-and-what-that-costs) for
-the reasoning and what it costs.
+**Configured through `sudo`.** FreeBSD's own Handbook treats `sudo` as
+the standard ("The most used application is currently Sudo") and
+describes `doas` as "an alternative to the widely used sudo(8) command".
+Since neither is in base, there is no native tool to defer to, and
+`sudo` is additionally what `ansible-core` supports without the
+`community.general` collection. See
+[the repository README](../README.md#which-escalation-tool-and-why-it-differs-per-platform)
+for the full reasoning.
 
-The benefit is that the shared engine's `doas.conf` handling — the
-marked block, the refusal to duplicate its own rule, the refusal to
-outrank an administrator's — carries over unchanged, with only
-`DOAS_BIN` and `DOAS_CONF` differing. `adapter_escalation_prepare`
-installs it, bootstrapping `pkg` first if that stub has never run, and
-both operations are bounded. On a host where the repository is
-unreachable, `check` reports `doas: NOT READY` and `apply` fails with
-the bounded-package diagnostic; there is no way to do better, because
-the capability genuinely is not present.
+This platform was initially implemented with `doas`, for reuse of the
+engine's existing `doas.conf` writer. That traded the platform's
+convention for shared code, and the trade was reversed: the engine now
+holds both writers, dispatched on `ESCALATION_STYLE`, and the adapter
+supplies only paths.
+
+The `sudo` shape is the simpler of the two. A `sudoers.d` drop-in is a
+file this service owns outright, so there is no marked block to locate
+and no unrelated content to preserve — but equally no marker saying
+"this is mine", so drift is detected by comparing content, ownership and
+mode against what the engine would write. That matters more than it
+sounds: `sudo` *ignores* a drop-in owned by a non-root uid, which was
+confirmed directly —
+
+```text
+sudo: /usr/local/etc/sudoers.d/ansible-bootstrap is owned by uid 1002, should be 0
+```
+
+— so the ownership comparison is part of whether the rule takes effect,
+not hygiene.
+
+`adapter_escalation_prepare` installs the package, bootstrapping `pkg`
+first if that stub has never run, and both operations are bounded. On a
+host where the repository is unreachable, `check` reports
+`escalation: NOT READY` and `apply` fails with the bounded-package
+diagnostic; there is no way to do better, because the capability
+genuinely is not present.
 
 **Bounding package operations.** This platform is where the bound was
 found to be broken, and the bug was in shared code that OpenBSD had
@@ -276,3 +304,24 @@ disposable FreeBSD VM. Add one case that OpenBSD does not need:
 bootstrap the host with the privilege-escalation package absent *and*
 the package repository unreachable, and confirm the failure is
 bounded, diagnosable, and recoverable on a later boot.
+
+### Escalation fault injection
+
+Run against the 15.1 guest when the default changed from `doas` to
+`sudo`, and repeated on the NetBSD guest with identical results. Each
+case was injected, reconciled, and the outcome read back off the host:
+
+| Injected fault | Expected | Result |
+| --- | --- | --- |
+| drop-in deleted | written | `change: Configuring passwordless sudo` |
+| drop-in truncated to empty | rewritten | content restored |
+| drop-in `chmod 0666` | mode repaired | back to `-r--r-----` |
+| drop-in given to the `ansible` account | ownership repaired | back to `0 0`; `sudo` had been refusing it as "owned by uid 1002, should be 0" |
+| `sudo` package removed entirely | reinstalled, then configured | 2 changes — exercises `adapter_escalation_prepare` |
+| drop-in correct but `@includedir` removed from `sudoers`, so it is ignored | refuse, change nothing | `ERROR: Refusing to rewrite a correct sudoers drop-in`; drop-in left untouched |
+| `ansible ALL=(ALL) !ALL` added to `sudoers` | refuse, write nothing | `ERROR: Refusing to override administrator sudo policy`; no drop-in created |
+| `ansible ALL=(ALL) NOPASSWD: ALL` added to `sudoers`, drop-in absent | already satisfied | `escalation: OK`, `no changes were needed`, nothing written |
+
+The last two are the pair that matters: this service refuses to outrank
+an administrator's decision in either direction — it will not grant
+over a denial, and it will not duplicate a grant that already exists.

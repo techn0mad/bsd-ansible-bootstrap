@@ -10,12 +10,27 @@
 # /bin/tcsh only — so the OpenBSD adapter's /bin/ksh cannot carry over.
 LOGIN_SHELL=/bin/sh
 
-# doas is a package here rather than part of the base system, so both
-# the binary and its configuration live under /usr/local. Neither
-# exists until adapter_escalation_prepare has run.
-DOAS_BIN=/usr/local/bin/doas
-DOAS_CONF=/usr/local/etc/doas.conf
-DOAS_PACKAGE=doas
+# FreeBSD defaults to sudo. Neither sudo nor doas is in the base
+# system -- both are ports -- so there is no OS-native tool to defer to,
+# and sudo is what the FreeBSD Handbook documents and what ansible-core
+# supports without an added collection. Only OpenBSD, where doas is in
+# base, defaults to doas.
+ESCALATION_STYLE=sudo
+ESCALATION_BIN=/usr/local/bin/sudo
+ESCALATION_PACKAGE=sudo
+
+# The drop-in this service owns outright, and the administrator's file
+# it is included from. The shipped sudoers ends with
+# "@includedir /usr/local/etc/sudoers.d", measured on 15.1-RELEASE as
+# the last effective line of the file, so a drop-in is read and is
+# evaluated last.
+ESCALATION_CONF=/usr/local/etc/sudoers.d/ansible-bootstrap
+ESCALATION_POLICY=/usr/local/etc/sudoers
+
+# visudo checks a file given with -c -f without installing it, exiting 0
+# when it parses and 1 when it does not -- including when the file is
+# missing. It is in sbin, not bin, unlike sudo itself.
+ESCALATION_VALIDATE='/usr/local/sbin/visudo -c -f'
 
 adapter_create_account()
 {
@@ -25,16 +40,16 @@ adapter_create_account()
 }
 
 # The structural difference from OpenBSD. There, doas is always present
-# and escalation can always be configured. Here it is a package, so
-# escalation depends on a working package manager and a reachable
-# repository — and on a minimal installation pkg itself is only a stub
-# until it has bootstrapped.
+# and escalation can always be configured. Here the escalation tool is a
+# package, so escalation depends on a working package manager and a
+# reachable repository — and on a minimal installation pkg itself is
+# only a stub until it has bootstrapped.
 #
 # Both operations are bounded: this runs at boot, and an unreachable
 # repository must fail rather than stall.
 adapter_escalation_prepare()
 {
-    [ -x "$DOAS_BIN" ] && return 0
+    [ -x "$ESCALATION_BIN" ] && return 0
 
     if ! pkg -N >/dev/null 2>&1; then
         changed "Bootstrapping pkg"
@@ -42,21 +57,22 @@ adapter_escalation_prepare()
         if ! run_bounded "$PKG_TIMEOUT" \
                 env ASSUME_ALWAYS_YES=yes pkg bootstrap; then
             log "pkg is not bootstrapped and bootstrapping failed. Until it"
-            log "succeeds, doas cannot be installed and privilege escalation"
+            log "succeeds, sudo cannot be installed and privilege escalation"
             log "cannot be configured. Check network reachability."
             die "Cannot bootstrap pkg"
         fi
     fi
 
-    changed "Installing $DOAS_PACKAGE"
+    changed "Installing $ESCALATION_PACKAGE"
 
-    if ! adapter_package_install "$DOAS_PACKAGE"; then
-        log "Installing $DOAS_PACKAGE failed or timed out."
+    if ! adapter_package_install "$ESCALATION_PACKAGE"; then
+        log "Installing $ESCALATION_PACKAGE failed or timed out."
     fi
 
     # The install status is advisory; the binary appearing is the gate.
-    [ -x "$DOAS_BIN" ] ||
-        die "$DOAS_BIN is still missing after installing $DOAS_PACKAGE"
+    [ -x "$ESCALATION_BIN" ] ||
+        die "$ESCALATION_BIN is still missing after installing" \
+            "$ESCALATION_PACKAGE"
 }
 
 adapter_service_enabled()
