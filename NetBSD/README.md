@@ -138,21 +138,28 @@ predecessor could surface this: OpenBSD's `doas.conf` lives in `/etc`,
 which always exists, and FreeBSD's package creates
 `/usr/local/etc` itself.
 
-### Account creation warns, harmlessly
+### Account creation takes no `-p`
 
-NetBSD's `useradd` validates `-p` more strictly than OpenBSD's and
-rewrites the value:
+All three platforms lock the account's password, and all three do it
+differently:
+
+```sh
+OpenBSD   useradd -m -d DIR -s SHELL -p '*' ACCOUNT
+FreeBSD   pw useradd -n ACCOUNT -d DIR -s SHELL -m -w no
+NetBSD    useradd -m -d DIR -s SHELL ACCOUNT
+```
+
+NetBSD rejects `*` as an encrypted password and rewrites it:
 
 ```text
 useradd: Password `*' is invalid: setting it to `*************'
 ```
 
-The account is still locked — no `crypt` output equals a row of
-asterisks — so the invariant holds and the warning is cosmetic. It is
-left alone rather than dropping `-p`, because what `useradd` does with
-no `-p` at all has not been measured on this platform, and changing how
-an account's password is set on an unverified hunch is not worth saving
-one line of log noise.
+Its default with no `-p` is that same locked field — measured rather
+than assumed, by creating a throwaway account without `-p` and reading
+`/etc/master.passwd`, which gave a byte-identical
+`probeuser:*************`. So `-p '*'` bought nothing here but a line of
+noise in the log, and is omitted.
 
 ### Package access has to be derived
 

@@ -49,21 +49,19 @@ RC_END='# END ansible-bootstrap'
 
 adapter_create_account()
 {
-    # -p '*' leaves no usable password; SSH public-key authentication is
-    # configured separately by the engine.
-    #
-    # NetBSD's useradd validates the argument more strictly than
-    # OpenBSD's and rewrites it, warning:
+    # No -p, unlike the OpenBSD adapter. NetBSD's useradd rejects `*' as
+    # an encrypted password and rewrites it, warning:
     #
     #   useradd: Password `*' is invalid: setting it to `*************'
     #
-    # The outcome is still a locked account -- no crypt output equals a
-    # row of asterisks -- so the invariant holds and the warning is
-    # cosmetic. Left as it is rather than dropping -p, because what
-    # useradd does with no -p at all has not been measured here, and an
-    # unverified change to how the account's password is set is not
-    # worth saving one line of log noise.
-    useradd -m -d "$HOME_DIR" -s "$LOGIN_SHELL" -p '*' "$ACCOUNT"
+    # Its default with no -p at all is that same locked field --
+    # measured, not assumed: a throwaway account created without -p came
+    # out as `probeuser:*************', byte-identical. So -p '*' bought
+    # nothing here but a warning in the log.
+    #
+    # The account therefore has no usable password either way; SSH
+    # public-key authentication is configured separately by the engine.
+    useradd -m -d "$HOME_DIR" -s "$LOGIN_SHELL" "$ACCOUNT"
 }
 
 # doas comes from pkgsrc here, so escalation depends on a working
