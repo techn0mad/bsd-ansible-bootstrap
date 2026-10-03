@@ -244,13 +244,79 @@ pre-release and no free-threaded variants, so `PYTHON_MAX=3.14` selects
 
 ## Validation
 
-The plan in the repository README applies unchanged. Nothing below has
-been done yet:
+The plan in the repository README applies unchanged. Done on an 11.0
+aarch64 guest: a pristine install reaching all five invariants,
+`adapter_escalation_prepare` installing `doas` from pkgsrc,
+`lib/controller-test.sh -a` at 10/10, the `rc.conf` marked block, the
+`rc.d` hook at boot, and every adapter function including
+`adapter_service_start`.
 
-- A fresh install reaching all five invariants.
-- `lib/controller-test.sh -a` from the controller.
-- `adapter_escalation_prepare` installing `doas` on a host that does not
-  have it, which is the step this platform depends on most.
-- Drift repair, by hand and then unattended at boot.
-- `rcorder` placement of the installed hook, confirmed before a reboot
-  rather than after.
+Two remain. Both need the console, because both can leave the host
+unreachable if the repair they exercise does not work.
+
+### Drift repaired unattended at boot
+
+Disable `sshd` by changing the administrator's own assignment rather
+than appending one. That matters: the engine writes its `sshd=YES` into
+a marked block at the end of `rc.conf`, and `rc.conf` is last-wins, so
+an assignment appended *after* that block would outrank the repair and
+the engine would correctly report a conflict instead of fixing it.
+Editing the existing line is also what an administrator would actually
+do.
+
+```sh
+sed 's/^sshd=YES$/sshd=NO/' /etc/rc.conf > /tmp/rc.new
+cp /tmp/rc.new /etc/rc.conf && rm /tmp/rc.new
+service -e sshd && echo STILL-ENABLED || echo disabled
+reboot
+```
+
+`sed -i` is avoided deliberately — its argument handling differs across
+the BSDs, and this is a file that breaks boot if mangled.
+
+Expect **two** changes in the log, `Enabling sshd` then `Starting
+sshd`, the console showing both announce lines, and the host reachable
+from the controller afterwards. `rc` skips the disabled `sshd` but
+`rcorder` still places the hook after it, so the hook runs and repairs
+both facts.
+
+If SSH is dead afterwards, the hook did not run when a service it
+`REQUIRE`s was skipped — which would be a genuine ordering bug and
+worth knowing. Recover with `service ansible_bootstrap onestart`.
+
+### A boot with the package repository unreachable
+
+The only path that exercises `run_bounded`'s timeout for real. A
+misconfigured repository fails fast and does not test the bound, so
+`ftp` has to be made to hang — the adapter fetches the package index
+with it, and the engine's `PATH` starts with `/sbin`:
+
+```sh
+sed 's/^PKG_TIMEOUT=300$/PKG_TIMEOUT=15/' /usr/local/libexec/ansible-bootstrap > /tmp/e
+cp /tmp/e /usr/local/libexec/ansible-bootstrap && rm /tmp/e
+pkg_delete python314                      # so apply must reach the repository
+printf '#!/bin/sh\nsleep 600\n' > /sbin/ftp
+chmod +x /sbin/ftp
+reboot
+```
+
+Expect the console to show `FAILED`, the log to carry `Exceeded 15s;
+terminating: ftp -o - …` followed by `Could not query the package
+repository within 15s`, **boot to complete normally**, and SSH to still
+work — only Python is broken. That last part is the whole purpose of
+bounding the operation.
+
+Clean up promptly; `/sbin/ftp` shadows `ftp` for everything:
+
+```sh
+rm -f /sbin/ftp
+cd /path/to/checkout/NetBSD && ./install.sh --enable-boot-hook
+```
+
+The reinstall restores `PKG_TIMEOUT=300` along with the engine, and its
+`apply` reinstalls `python314`.
+
+Worth knowing before running it: with `PKG_TIMEOUT=300` and two bounded
+calls — `ftp` for the index, `pkg_add` for the install — a dead
+repository costs around ten minutes of boot delay. The bound holds, but
+the default is worth reconsidering now that it means something.
