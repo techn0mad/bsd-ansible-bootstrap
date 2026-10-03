@@ -1,6 +1,6 @@
 # Ansible Bootstrap Service
 
-**v0.4**
+**v0.5**
 
 A small, idempotent set of scripts for making a newly installed BSD
 host **ready to be provisioned by Ansible**. The service runs at boot,
@@ -23,7 +23,7 @@ and exits. It is not a resident daemon or a replacement for Ansible.
 > operator's log.
 >
 > Each platform is still validated on a **single OS release** — 7.9,
-> 15.1, 11.0 — which is why v0.4 is tagged as a pre-release. Each
+> 15.1, 11.0 — which is why v0.5 is tagged as a pre-release. Each
 > platform's README lists what remains unconfirmed there.
 
 ## Quick start
@@ -70,26 +70,26 @@ for something that provisions hosts.
 **OpenBSD and NetBSD** — `ftp(1)` is in base and speaks HTTPS:
 
 ```sh
-ftp -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.4 | tar xzf -
+ftp -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.5 | tar xzf -
 ```
 
 **FreeBSD** — no `ftp` for this; use `fetch(1)`:
 
 ```sh
-fetch -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.4 | tar xzf -
+fetch -o - https://codeload.github.com/techn0mad/bsd-ansible-bootstrap/tar.gz/v0.5 | tar xzf -
 ```
 
 Then, on every platform, enter the directory for *this* host's OS and
 run the installer:
 
 ```sh
-cd bsd-ansible-bootstrap-0.4/OpenBSD     # or FreeBSD, or NetBSD
+cd bsd-ansible-bootstrap-0.5/OpenBSD     # or FreeBSD, or NetBSD
 ./install.sh
 ```
 
 Two details that cost real debugging time:
 
-- The directory is `bsd-ansible-bootstrap-0.4`, **not** `-v0.4`:
+- The directory is `bsd-ansible-bootstrap-0.5`, **not** `-v0.5`:
   GitHub strips a tag's leading `v` from the archive's top-level
   directory name. (For a commit it is `-<sha>` exactly as given.)
 - **Pass nothing after `f -`.** OpenBSD's `tar` is the `pax` binary and
